@@ -3,6 +3,8 @@ package validation
 import (
 	"strings"
 	"testing"
+
+	"github.com/hyperengineering/engram/internal/types"
 )
 
 // --- ValidateUTF8 Tests ---
@@ -349,5 +351,345 @@ func TestCollector_Errors_ReturnsSlice(t *testing.T) {
 	}
 	if errors[1].Field != "f2" || errors[1].Message != "m2" {
 		t.Errorf("errors[1] = %+v, want {Field:f2, Message:m2}", errors[1])
+	}
+}
+
+// --- ValidateLoreEntry Tests ---
+
+func TestValidateLoreEntry_Valid(t *testing.T) {
+	entry := types.Lore{
+		Content:    "ORM generates N+1 queries for polymorphic associations",
+		Context:    "Discovered while profiling Rails app",
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.7,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	if len(errs) != 0 {
+		t.Errorf("ValidateLoreEntry(valid) = %v, want no errors", errs)
+	}
+}
+
+func TestValidateLoreEntry_AllFieldsInvalid(t *testing.T) {
+	// Create an entry where all validatable fields are invalid
+	invalidUTF8 := string([]byte{0xff, 0xfe})
+	entry := types.Lore{
+		Content:    invalidUTF8,      // Invalid UTF-8
+		Context:    "valid\x00null",  // Contains null byte
+		Category:   "INVALID",        // Invalid enum
+		Confidence: 1.5,              // Out of range
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	// Should have at least 3 errors: content UTF-8, context null byte, category enum, confidence range
+	if len(errs) < 3 {
+		t.Errorf("ValidateLoreEntry(all invalid) = %d errors, want >= 3", len(errs))
+	}
+}
+
+func TestValidateLoreEntry_ContentRequired(t *testing.T) {
+	entry := types.Lore{
+		Content:    "",
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasContentError := false
+	for _, e := range errs {
+		if e.Field == "lore[0].content" && strings.Contains(e.Message, "required") {
+			hasContentError = true
+			break
+		}
+	}
+	if !hasContentError {
+		t.Errorf("ValidateLoreEntry(empty content) missing content required error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_ContentTooLong(t *testing.T) {
+	entry := types.Lore{
+		Content:    strings.Repeat("a", 4001),
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasLengthError := false
+	for _, e := range errs {
+		if e.Field == "lore[0].content" && strings.Contains(e.Message, "4000") {
+			hasLengthError = true
+			break
+		}
+	}
+	if !hasLengthError {
+		t.Errorf("ValidateLoreEntry(4001 chars) missing length error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_ContentNullBytes(t *testing.T) {
+	entry := types.Lore{
+		Content:    "hello\x00world",
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasNullError := false
+	for _, e := range errs {
+		if e.Field == "lore[0].content" && strings.Contains(e.Message, "null") {
+			hasNullError = true
+			break
+		}
+	}
+	if !hasNullError {
+		t.Errorf("ValidateLoreEntry(null bytes) missing null byte error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_ContentInvalidUTF8(t *testing.T) {
+	invalidUTF8 := string([]byte{0xff, 0xfe})
+	entry := types.Lore{
+		Content:    invalidUTF8,
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasUTF8Error := false
+	for _, e := range errs {
+		if e.Field == "lore[0].content" && strings.Contains(e.Message, "UTF-8") {
+			hasUTF8Error = true
+			break
+		}
+	}
+	if !hasUTF8Error {
+		t.Errorf("ValidateLoreEntry(invalid UTF-8) missing UTF-8 error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_ContextTooLong(t *testing.T) {
+	entry := types.Lore{
+		Content:    "valid content",
+		Context:    strings.Repeat("a", 1001),
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasLengthError := false
+	for _, e := range errs {
+		if e.Field == "lore[0].context" && strings.Contains(e.Message, "1000") {
+			hasLengthError = true
+			break
+		}
+	}
+	if !hasLengthError {
+		t.Errorf("ValidateLoreEntry(context 1001 chars) missing length error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_ContextOptional(t *testing.T) {
+	entry := types.Lore{
+		Content:    "valid content",
+		Context:    "", // Empty is valid
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	for _, e := range errs {
+		if strings.Contains(e.Field, "context") {
+			t.Errorf("ValidateLoreEntry(empty context) should not error on context, got: %v", e)
+		}
+	}
+}
+
+func TestValidateLoreEntry_InvalidCategory(t *testing.T) {
+	entry := types.Lore{
+		Content:    "valid content",
+		Category:   "INVALID_CATEGORY",
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasCategoryError := false
+	for _, e := range errs {
+		if e.Field == "lore[0].category" && strings.Contains(e.Message, "must be one of") {
+			hasCategoryError = true
+			break
+		}
+	}
+	if !hasCategoryError {
+		t.Errorf("ValidateLoreEntry(invalid category) missing category error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_ConfidenceBelowRange(t *testing.T) {
+	entry := types.Lore{
+		Content:    "valid content",
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: -0.1,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasRangeError := false
+	for _, e := range errs {
+		if e.Field == "lore[0].confidence" && strings.Contains(e.Message, "between") {
+			hasRangeError = true
+			break
+		}
+	}
+	if !hasRangeError {
+		t.Errorf("ValidateLoreEntry(confidence -0.1) missing range error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_ConfidenceAboveRange(t *testing.T) {
+	entry := types.Lore{
+		Content:    "valid content",
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 1.1,
+	}
+
+	errs := ValidateLoreEntry(0, entry)
+	hasRangeError := false
+	for _, e := range errs {
+		if e.Field == "lore[0].confidence" && strings.Contains(e.Message, "between") {
+			hasRangeError = true
+			break
+		}
+	}
+	if !hasRangeError {
+		t.Errorf("ValidateLoreEntry(confidence 1.1) missing range error, got: %v", errs)
+	}
+}
+
+func TestValidateLoreEntry_IndexInFieldName(t *testing.T) {
+	entry := types.Lore{
+		Content:    "",
+		Category:   types.CategoryDependencyBehavior,
+		Confidence: 0.5,
+	}
+
+	errs := ValidateLoreEntry(5, entry)
+	hasIndexedField := false
+	for _, e := range errs {
+		if strings.Contains(e.Field, "lore[5]") {
+			hasIndexedField = true
+			break
+		}
+	}
+	if !hasIndexedField {
+		t.Errorf("ValidateLoreEntry(index 5) should use lore[5] prefix, got: %v", errs)
+	}
+}
+
+// --- ValidateIngestRequest Tests ---
+
+func TestValidateIngestRequest_Valid(t *testing.T) {
+	req := types.IngestRequest{
+		SourceID: "devcontainer-abc123",
+		Lore: []types.Lore{
+			{
+				Content:    "valid content",
+				Category:   types.CategoryDependencyBehavior,
+				Confidence: 0.5,
+			},
+		},
+	}
+
+	errs := ValidateIngestRequest(req)
+	if len(errs) != 0 {
+		t.Errorf("ValidateIngestRequest(valid) = %v, want no errors", errs)
+	}
+}
+
+func TestValidateIngestRequest_MissingSourceID(t *testing.T) {
+	req := types.IngestRequest{
+		SourceID: "",
+		Lore: []types.Lore{
+			{Content: "valid", Category: types.CategoryDependencyBehavior, Confidence: 0.5},
+		},
+	}
+
+	errs := ValidateIngestRequest(req)
+	hasSourceIDError := false
+	for _, e := range errs {
+		if e.Field == "source_id" {
+			hasSourceIDError = true
+			break
+		}
+	}
+	if !hasSourceIDError {
+		t.Errorf("ValidateIngestRequest(missing source_id) should have source_id error, got: %v", errs)
+	}
+}
+
+func TestValidateIngestRequest_EmptyLoreArray(t *testing.T) {
+	req := types.IngestRequest{
+		SourceID: "devcontainer-abc123",
+		Lore:     []types.Lore{},
+	}
+
+	errs := ValidateIngestRequest(req)
+	hasLoreError := false
+	for _, e := range errs {
+		if e.Field == "lore" && strings.Contains(e.Message, "empty") {
+			hasLoreError = true
+			break
+		}
+	}
+	if !hasLoreError {
+		t.Errorf("ValidateIngestRequest(empty lore) should have lore error, got: %v", errs)
+	}
+}
+
+func TestValidateIngestRequest_MaxBatchSize(t *testing.T) {
+	loreEntries := make([]types.Lore, 50)
+	for i := range loreEntries {
+		loreEntries[i] = types.Lore{
+			Content:    "valid content",
+			Category:   types.CategoryDependencyBehavior,
+			Confidence: 0.5,
+		}
+	}
+
+	req := types.IngestRequest{
+		SourceID: "devcontainer-abc123",
+		Lore:     loreEntries,
+	}
+
+	errs := ValidateIngestRequest(req)
+	if len(errs) != 0 {
+		t.Errorf("ValidateIngestRequest(50 entries) = %v, want no errors (at limit)", errs)
+	}
+}
+
+func TestValidateIngestRequest_ExceedsMaxBatch(t *testing.T) {
+	loreEntries := make([]types.Lore, 51)
+	for i := range loreEntries {
+		loreEntries[i] = types.Lore{
+			Content:    "valid content",
+			Category:   types.CategoryDependencyBehavior,
+			Confidence: 0.5,
+		}
+	}
+
+	req := types.IngestRequest{
+		SourceID: "devcontainer-abc123",
+		Lore:     loreEntries,
+	}
+
+	errs := ValidateIngestRequest(req)
+	hasBatchError := false
+	for _, e := range errs {
+		if e.Field == "lore" && strings.Contains(e.Message, "50") {
+			hasBatchError = true
+			break
+		}
+	}
+	if !hasBatchError {
+		t.Errorf("ValidateIngestRequest(51 entries) should have batch size error, got: %v", errs)
 	}
 }

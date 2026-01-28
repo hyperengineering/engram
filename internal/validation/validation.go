@@ -4,7 +4,28 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/hyperengineering/engram/internal/types"
 )
+
+// Validation constants per architecture specification.
+const (
+	MaxContentLength = 4000
+	MaxContextLength = 1000
+	MaxBatchSize     = 50
+)
+
+// ValidLoreCategories defines the allowed category values from types.go.
+var ValidLoreCategories = []string{
+	"ARCHITECTURAL_DECISION",
+	"PATTERN_OUTCOME",
+	"INTERFACE_LESSON",
+	"EDGE_CASE_DISCOVERY",
+	"IMPLEMENTATION_FRICTION",
+	"TESTING_STRATEGY",
+	"DEPENDENCY_BEHAVIOR",
+	"PERFORMANCE_INSIGHT",
+}
 
 // ValidationError represents a single field validation failure.
 type ValidationError struct {
@@ -125,4 +146,44 @@ func ValidateRange(field string, value, min, max float64) *ValidationError {
 		}
 	}
 	return nil
+}
+
+// ValidateLoreEntry validates a single lore entry and returns all errors.
+func ValidateLoreEntry(index int, entry types.Lore) []ValidationError {
+	c := &Collector{}
+	fieldPrefix := fmt.Sprintf("lore[%d]", index)
+
+	// Content: required, max 4000 chars, UTF-8, no null bytes
+	c.Add(ValidateRequired(fieldPrefix+".content", entry.Content))
+	c.Add(ValidateMaxLength(fieldPrefix+".content", entry.Content, MaxContentLength))
+	c.Add(ValidateUTF8(fieldPrefix+".content", entry.Content))
+	c.Add(ValidateNoNullBytes(fieldPrefix+".content", entry.Content))
+
+	// Context: optional, max 1000 chars, UTF-8, no null bytes
+	if entry.Context != "" {
+		c.Add(ValidateMaxLength(fieldPrefix+".context", entry.Context, MaxContextLength))
+		c.Add(ValidateUTF8(fieldPrefix+".context", entry.Context))
+		c.Add(ValidateNoNullBytes(fieldPrefix+".context", entry.Context))
+	}
+
+	// Category: required, valid enum
+	c.Add(ValidateRequired(fieldPrefix+".category", string(entry.Category)))
+	c.Add(ValidateEnum(fieldPrefix+".category", string(entry.Category), ValidLoreCategories))
+
+	// Confidence: required, range 0.0-1.0
+	c.Add(ValidateRange(fieldPrefix+".confidence", entry.Confidence, 0.0, 1.0))
+
+	return c.Errors()
+}
+
+// ValidateIngestRequest validates request-level fields (not individual entries).
+func ValidateIngestRequest(req types.IngestRequest) []ValidationError {
+	c := &Collector{}
+	c.Add(ValidateRequired("source_id", req.SourceID))
+	if len(req.Lore) == 0 {
+		c.Add(&ValidationError{Field: "lore", Message: "is required and must not be empty"})
+	} else if len(req.Lore) > MaxBatchSize {
+		c.Add(&ValidationError{Field: "lore", Message: fmt.Sprintf("exceeds maximum batch size of %d", MaxBatchSize)})
+	}
+	return c.Errors()
 }

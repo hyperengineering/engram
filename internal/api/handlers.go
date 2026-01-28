@@ -2,12 +2,15 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/hyperengineering/engram/internal/embedding"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/types"
+	"github.com/hyperengineering/engram/internal/validation"
 )
 
 // Handler implements the API handlers
@@ -52,34 +55,54 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 	var req types.IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		WriteProblem(w, r, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %s", err.Error()))
 		return
 	}
 
-	// Convert legacy Lore to NewLoreEntry
-	entries := make([]types.NewLoreEntry, len(req.Lore))
+	// Validate request-level fields (rejects entire request if invalid)
+	reqErrors := validation.ValidateIngestRequest(req)
+	if len(reqErrors) > 0 {
+		WriteProblemWithErrors(w, r, "Request contains invalid fields", reqErrors)
+		return
+	}
+
+	// Validate each entry, separate valid from invalid (partial acceptance)
+	var validEntries []types.NewLoreEntry
+	var allErrors []string
+
 	for i, lore := range req.Lore {
-		entries[i] = types.NewLoreEntry{
+		errs := validation.ValidateLoreEntry(i, lore)
+		if len(errs) > 0 {
+			for _, err := range errs {
+				allErrors = append(allErrors, fmt.Sprintf("%s: %s", err.Field, err.Message))
+			}
+			continue
+		}
+		validEntries = append(validEntries, types.NewLoreEntry{
 			Content:    lore.Content,
 			Context:    lore.Context,
 			Category:   string(lore.Category),
 			Confidence: lore.Confidence,
 			SourceID:   req.SourceID,
+		})
+	}
+
+	var accepted int
+	if len(validEntries) > 0 {
+		result, err := h.store.IngestLore(r.Context(), validEntries)
+		if err != nil {
+			slog.Error("ingest failed", "error", err, "source_id", req.SourceID)
+			MapStoreError(w, r, err)
+			return
 		}
+		accepted = result.Accepted
 	}
 
-	// Store entries (embeddings generated asynchronously by worker)
-	result, err := h.store.IngestLore(r.Context(), entries)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	resp := types.IngestResponse{
-		Accepted: result.Accepted,
-		Merged:   result.Merged,
-		Rejected: result.Rejected,
-		Errors:   result.Errors,
+	resp := types.IngestResult{
+		Accepted: accepted,
+		Merged:   0,
+		Rejected: len(req.Lore) - len(validEntries),
+		Errors:   allErrors,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,11 +19,19 @@ import (
 
 // mockStore implements store.Store interface for testing
 type mockStore struct {
-	stats    *types.StoreStats
-	statsErr error
+	stats       *types.StoreStats
+	statsErr    error
+	ingestErr   error
+	ingestCalls int
+	lastEntries []types.NewLoreEntry
 }
 
 func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
+	m.ingestCalls++
+	m.lastEntries = entries
+	if m.ingestErr != nil {
+		return nil, m.ingestErr
+	}
 	return &types.IngestResult{Accepted: len(entries)}, nil
 }
 
@@ -337,5 +347,511 @@ func TestHealth_StoreErrorReturns500(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d for store error", w.Code, http.StatusInternalServerError)
+	}
+}
+
+// --- IngestLore Endpoint Tests ---
+
+func TestIngestLore_ValidBatch(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [
+			{"content": "First insight", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.7},
+			{"content": "Second insight", "category": "PATTERN_OUTCOME", "confidence": 0.8},
+			{"content": "Third insight", "context": "optional context", "category": "ARCHITECTURAL_DECISION", "confidence": 0.9}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Accepted != 3 {
+		t.Errorf("accepted = %d, want 3", resp.Accepted)
+	}
+	if resp.Rejected != 0 {
+		t.Errorf("rejected = %d, want 0", resp.Rejected)
+	}
+	if len(resp.Errors) != 0 {
+		t.Errorf("errors = %v, want empty", resp.Errors)
+	}
+}
+
+func TestIngestLore_MissingSourceID(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "",
+		"lore": [{"content": "valid", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+
+	var problem ProblemWithErrors
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	if problem.Status != http.StatusUnprocessableEntity {
+		t.Errorf("problem.status = %d, want %d", problem.Status, http.StatusUnprocessableEntity)
+	}
+
+	hasSourceIDError := false
+	for _, e := range problem.Errors {
+		if e.Field == "source_id" {
+			hasSourceIDError = true
+			break
+		}
+	}
+	if !hasSourceIDError {
+		t.Errorf("expected source_id error, got: %v", problem.Errors)
+	}
+}
+
+func TestIngestLore_ContentTooLong(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	longContent := strings.Repeat("a", 4001)
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [{"content": "` + longContent + `", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	// Partial acceptance: entry rejected, response is 200
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (partial acceptance)", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Rejected != 1 {
+		t.Errorf("rejected = %d, want 1", resp.Rejected)
+	}
+	if resp.Accepted != 0 {
+		t.Errorf("accepted = %d, want 0", resp.Accepted)
+	}
+
+	hasLengthError := false
+	for _, e := range resp.Errors {
+		if strings.Contains(e, "4000") {
+			hasLengthError = true
+			break
+		}
+	}
+	if !hasLengthError {
+		t.Errorf("expected length error in errors, got: %v", resp.Errors)
+	}
+}
+
+func TestIngestLore_ContentNullBytes(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	// JSON with null byte escaped as \u0000 (valid JSON that decodes to string with null byte)
+	body := `{"source_id": "devcontainer-abc123", "lore": [{"content": "hello\u0000world", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	// Partial acceptance: entry rejected, response is 200
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (partial acceptance)", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Rejected != 1 {
+		t.Errorf("rejected = %d, want 1", resp.Rejected)
+	}
+
+	hasNullError := false
+	for _, e := range resp.Errors {
+		if strings.Contains(e, "null") {
+			hasNullError = true
+			break
+		}
+	}
+	if !hasNullError {
+		t.Errorf("expected null byte error in errors, got: %v", resp.Errors)
+	}
+}
+
+func TestIngestLore_InvalidCategory(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [{"content": "valid content", "category": "INVALID_CATEGORY", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (partial acceptance)", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Rejected != 1 {
+		t.Errorf("rejected = %d, want 1", resp.Rejected)
+	}
+
+	hasCategoryError := false
+	for _, e := range resp.Errors {
+		if strings.Contains(e, "category") && strings.Contains(e, "must be one of") {
+			hasCategoryError = true
+			break
+		}
+	}
+	if !hasCategoryError {
+		t.Errorf("expected category error in errors, got: %v", resp.Errors)
+	}
+}
+
+func TestIngestLore_ConfidenceOutOfRange(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [
+			{"content": "below min", "category": "DEPENDENCY_BEHAVIOR", "confidence": -0.1},
+			{"content": "above max", "category": "DEPENDENCY_BEHAVIOR", "confidence": 1.1}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (partial acceptance)", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Rejected != 2 {
+		t.Errorf("rejected = %d, want 2", resp.Rejected)
+	}
+}
+
+func TestIngestLore_PartialBatch(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [
+			{"content": "valid first", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.7},
+			{"content": "valid second", "category": "PATTERN_OUTCOME", "confidence": 0.8},
+			{"content": "", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Accepted != 2 {
+		t.Errorf("accepted = %d, want 2", resp.Accepted)
+	}
+	if resp.Rejected != 1 {
+		t.Errorf("rejected = %d, want 1", resp.Rejected)
+	}
+	if len(resp.Errors) == 0 {
+		t.Error("expected errors for rejected entry")
+	}
+}
+
+func TestIngestLore_EmptyLoreArray(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{"source_id": "devcontainer-abc123", "lore": []}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+func TestIngestLore_BatchTooLarge(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	// Build a batch with 51 entries
+	var loreEntries []string
+	for i := 0; i < 51; i++ {
+		loreEntries = append(loreEntries, `{"content": "entry", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}`)
+	}
+	body := `{"source_id": "devcontainer-abc123", "lore": [` + strings.Join(loreEntries, ",") + `]}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+
+	var problem ProblemWithErrors
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	hasBatchError := false
+	for _, e := range problem.Errors {
+		if e.Field == "lore" && strings.Contains(e.Message, "50") {
+			hasBatchError = true
+			break
+		}
+	}
+	if !hasBatchError {
+		t.Errorf("expected batch size error, got: %v", problem.Errors)
+	}
+}
+
+func TestIngestLore_InvalidJSON(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{invalid json`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+
+	var problem Problem
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	if problem.Status != http.StatusBadRequest {
+		t.Errorf("problem.status = %d, want %d", problem.Status, http.StatusBadRequest)
+	}
+}
+
+func TestIngestLore_StoreError(t *testing.T) {
+	s := &mockStore{
+		stats:     &types.StoreStats{},
+		ingestErr: errors.New("database connection failed"),
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [{"content": "valid content", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+func TestIngestLore_ResponseContentType(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [{"content": "valid", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q for success response", contentType, "application/json")
+	}
+}
+
+func TestIngestLore_ErrorsArrayNeverNull(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [{"content": "valid", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	// Parse raw JSON to check errors is [] not null
+	var rawResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	errors, ok := rawResp["errors"].([]any)
+	if !ok {
+		t.Errorf("errors should be an array, got: %T", rawResp["errors"])
+	}
+	if errors == nil {
+		t.Error("errors should be [] not null")
+	}
+}
+
+func TestIngestLore_ContextTooLong(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	longContext := strings.Repeat("a", 1001)
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [{"content": "valid content", "context": "` + longContext + `", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (partial acceptance)", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Rejected != 1 {
+		t.Errorf("rejected = %d, want 1", resp.Rejected)
+	}
+
+	hasContextError := false
+	for _, e := range resp.Errors {
+		if strings.Contains(e, "context") && strings.Contains(e, "1000") {
+			hasContextError = true
+			break
+		}
+	}
+	if !hasContextError {
+		t.Errorf("expected context length error, got: %v", resp.Errors)
 	}
 }
