@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,61 +28,93 @@ var rootCmd = &cobra.Command{
 }
 
 func run(cmd *cobra.Command, args []string) error {
-	// Load configuration
+	// 1. Signal handling - Architecture Decision #11
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	// 2. Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
+	slog.Info("configuration loaded")
 
-	// Initialize logger
+	// 3. Initialize logger
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLogLevel(cfg.Log.Level),
 	}))
 	slog.SetDefault(logger)
+	slog.Info("logger initialized", "level", cfg.Log.Level)
 
-	// Initialize store
+	// 4. Initialize store (migrations, WAL mode)
 	db, err := store.NewSQLiteStore(cfg.Database.Path)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	slog.Info("store initialized", "path", cfg.Database.Path)
 
-	// Initialize embedding service
+	// 5. Initialize embedding service
 	embedder := embedding.NewOpenAI(cfg.Embedding.APIKey, cfg.Embedding.Model)
+	slog.Info("embedder initialized", "model", cfg.Embedding.Model)
 
-	// Initialize API
+	// 6. Initialize HTTP router
 	handler := api.NewHandlerWithLegacyStore(db, embedder, cfg.Auth.APIKey, Version)
 	router := api.NewRouter(handler)
+	slog.Info("router initialized")
 
-	// Build server address from port
+	// 7. Configure HTTP server
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-
-	// Start server
-	server := &http.Server{
+	srv := &http.Server{
 		Addr:         addr,
 		Handler:      router,
 		ReadTimeout:  time.Duration(cfg.Server.ReadTimeout),
 		WriteTimeout: time.Duration(cfg.Server.WriteTimeout),
 	}
 
-	// Graceful shutdown
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+	// 8. Worker lifecycle infrastructure
+	var wg sync.WaitGroup
+	// Future workers plug in here:
+	// startWorker(ctx, &wg, "snapshot", snapshotWorker.Run)
+	// startWorker(ctx, &wg, "decay", decayWorker.Run)
+	// startWorker(ctx, &wg, "embedding-retry", embeddingRetryWorker.Run)
 
+	// 9. Start HTTP server in goroutine
 	go func() {
-		slog.Info("Starting Engram", "address", addr)
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			slog.Error("Server error", "error", err)
+		slog.Info("server starting", "address", addr)
+		// ErrServerClosed is the expected error when Shutdown() is called gracefully.
+		// Any other error indicates an actual server failure that should trigger shutdown.
+		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+			slog.Error("server error", "error", err)
+			cancel() // Trigger shutdown on server failure
 		}
 	}()
 
-	<-done
-	slog.Info("Shutting down...")
+	// 10. Block until signal received
+	<-ctx.Done()
+	slog.Info("shutdown initiated")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Server.ShutdownTimeout))
-	defer cancel()
+	// 11. Graceful shutdown sequence
+	shutdownCtx, shutdownCancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(cfg.Server.ShutdownTimeout))
+	defer shutdownCancel()
 
-	return server.Shutdown(ctx)
+	// 11a. Stop HTTP server (drains in-flight requests)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server shutdown error", "error", err)
+	}
+
+	// 11b. Wait for workers to complete
+	wg.Wait()
+
+	// 11c. Close store
+	if err := db.Close(); err != nil {
+		slog.Error("store close error", "error", err)
+	}
+
+	slog.Info("shutdown complete")
+	return nil
 }
 
 func parseLogLevel(level string) slog.Level {
@@ -95,4 +128,16 @@ func parseLogLevel(level string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// startWorker launches a background worker goroutine that respects context cancellation.
+// Workers are tracked via WaitGroup for graceful shutdown.
+func startWorker(ctx context.Context, wg *sync.WaitGroup, name string, fn func(ctx context.Context)) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		slog.Info("worker started", "worker", name)
+		fn(ctx)
+		slog.Info("worker stopped", "worker", name)
+	}()
 }
