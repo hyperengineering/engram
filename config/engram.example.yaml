@@ -1,0 +1,139 @@
+# Engram Configuration File
+# ========================
+#
+# This is an example configuration file for Engram.
+# Copy this file to config/engram.yaml and modify as needed.
+#
+# Configuration precedence (highest to lowest):
+#   1. Environment variables (override everything)
+#   2. YAML config file
+#   3. Built-in defaults
+#
+# Environment variables override config file values.
+# Set ENGRAM_CONFIG_PATH to specify a custom config file location.
+
+# Server Configuration
+# --------------------
+server:
+  # HTTP server port
+  # Default: 8080
+  # Env: ENGRAM_PORT
+  port: 8080
+
+  # HTTP read timeout (time to read entire request including body)
+  # Default: 30s
+  # Env: ENGRAM_READ_TIMEOUT
+  read_timeout: 30s
+
+  # HTTP write timeout (time to write response)
+  # Default: 30s
+  # Env: ENGRAM_WRITE_TIMEOUT
+  write_timeout: 30s
+
+  # Graceful shutdown timeout (time to wait for connections to close)
+  # Default: 15s
+  # Env: ENGRAM_SHUTDOWN_TIMEOUT
+  shutdown_timeout: 15s
+
+# Database Configuration
+# ----------------------
+database:
+  # Path to SQLite database file
+  # Default: data/engram.db
+  # Env: ENGRAM_DB_PATH
+  path: data/engram.db
+
+# Embedding Service Configuration
+# -------------------------------
+# Note: API keys should be set via environment variables, not in config files.
+embedding:
+  # OpenAI embedding model to use
+  # Default: text-embedding-3-small
+  # Env: ENGRAM_EMBEDDING_MODEL
+  model: text-embedding-3-small
+
+  # Embedding dimensions (must match model output)
+  # Default: 1536
+  dimensions: 1536
+
+  # API Key - SET VIA ENVIRONMENT VARIABLE ONLY
+  # Env: OPENAI_API_KEY
+  # NEVER put API keys in config files!
+
+# Authentication Configuration
+# ----------------------------
+# Note: API keys should be set via environment variables, not in config files.
+# auth:
+  # API Key for client authentication - SET VIA ENVIRONMENT VARIABLE ONLY
+  # Env: ENGRAM_API_KEY
+  # NEVER put API keys in config files!
+
+# Background Worker Configuration
+# -------------------------------
+worker:
+  # Interval between snapshot creation runs
+  # Default: 1h
+  # Env: ENGRAM_SNAPSHOT_INTERVAL
+  snapshot_interval: 1h
+
+  # Interval between memory decay processing runs
+  # Default: 24h
+  # Env: ENGRAM_DECAY_INTERVAL
+  decay_interval: 24h
+
+  # Interval between embedding retry attempts for failed items
+  # Default: 5m
+  # Env: ENGRAM_EMBEDDING_RETRY_INTERVAL
+  embedding_retry_interval: 5m
+
+  # Maximum retry attempts for failed embedding operations
+  # Default: 10
+  # Env: ENGRAM_EMBEDDING_RETRY_MAX_ATTEMPTS
+  embedding_retry_max_attempts: 10
+
+# Logging Configuration
+# ---------------------
+log:
+  # Log level: debug, info, warn, error
+  # Default: info
+  # Env: ENGRAM_LOG_LEVEL
+  level: info
+
+  # Log format: json or text
+  # Default: json
+  # Env: ENGRAM_LOG_FORMAT
+  format: json
+
+# =============================================================================
+# Environment Variables Reference
+# =============================================================================
+#
+# Core Settings:
+#   ENGRAM_CONFIG_PATH          - Path to config file (default: config/engram.yaml)
+#   ENGRAM_DEV_MODE             - Set to "true" to skip API key validation
+#
+# Server:
+#   ENGRAM_PORT                 - Server port (default: 8080)
+#   ENGRAM_READ_TIMEOUT         - Read timeout (default: 30s)
+#   ENGRAM_WRITE_TIMEOUT        - Write timeout (default: 30s)
+#   ENGRAM_SHUTDOWN_TIMEOUT     - Shutdown timeout (default: 15s)
+#
+# Database:
+#   ENGRAM_DB_PATH              - Database path (default: data/engram.db)
+#
+# Secrets (REQUIRED for production):
+#   OPENAI_API_KEY              - OpenAI API key for embeddings
+#   ENGRAM_API_KEY              - API key for client authentication
+#
+# Embedding:
+#   ENGRAM_EMBEDDING_MODEL      - Model name (default: text-embedding-3-small)
+#
+# Workers:
+#   ENGRAM_SNAPSHOT_INTERVAL              - Snapshot interval (default: 1h)
+#   ENGRAM_DECAY_INTERVAL                 - Decay interval (default: 24h)
+#   ENGRAM_EMBEDDING_RETRY_INTERVAL       - Retry interval for failed embeddings (default: 5m)
+#   ENGRAM_EMBEDDING_RETRY_MAX_ATTEMPTS   - Max retry attempts (default: 10)
+#
+# Logging:
+#   ENGRAM_LOG_LEVEL            - Log level (default: info)
+#   ENGRAM_LOG_FORMAT           - Log format (default: json)
