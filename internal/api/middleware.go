@@ -1,13 +1,73 @@
+// Package api provides HTTP handlers and middleware for the Engram API.
+//
+// =============================================================================
+// OPERATION LOGGING CONVENTIONS
+// =============================================================================
+// All operation logs MUST use snake_case field names.
+//
+// Canonical Fields:
+//
+//	action      - Operation type: ingest, merge, deduplicate, feedback,
+//	              snapshot, decay, sync
+//	lore_id     - Lore entry identifier (ULID string)
+//	source_id   - Source identifier (ULID string)
+//	category    - Lore category: snippet, preference, procedure, context
+//	component   - Originating package: api, store, embedding, worker
+//	duration_ms - Operation timing in milliseconds
+//	error       - Error message (for ERROR level logs)
+//
+// Usage Examples:
+//
+//	// Successful operation
+//	slog.Info("lore ingested",
+//	    "action", "ingest",
+//	    "lore_id", entry.ID,
+//	    "source_id", sourceID,
+//	    "category", entry.Category,
+//	    "component", "api",
+//	    "duration_ms", elapsed.Milliseconds(),
+//	)
+//
+//	// Failed operation
+//	slog.Error("embedding generation failed",
+//	    "action", "embed",
+//	    "lore_id", entry.ID,
+//	    "error", err.Error(),
+//	    "component", "embedding",
+//	)
+//
+// =============================================================================
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5/middleware"
 )
+
+// GetRequestID extracts the request ID from context.
+// Returns empty string if no request ID is present.
+func GetRequestID(ctx context.Context) string {
+	return middleware.GetReqID(ctx)
+}
+
+// logLevelForStatus returns the appropriate log level based on HTTP status code.
+func logLevelForStatus(status int) slog.Level {
+	switch {
+	case status >= 500:
+		return slog.LevelError
+	case status >= 400:
+		return slog.LevelWarn
+	default:
+		return slog.LevelInfo
+	}
+}
 
 // extractBearerToken extracts the token from Authorization header.
 // Returns empty string for missing/malformed headers.
@@ -57,7 +117,8 @@ func AuthMiddleware(apiKey string) func(http.Handler) http.Handler {
 	}
 }
 
-// LoggingMiddleware logs HTTP requests
+// LoggingMiddleware logs HTTP requests with structured fields.
+// Emits log at INFO for 2xx/3xx, WARN for 4xx, ERROR for 5xx.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -67,11 +128,14 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(wrapped, r)
 
-		slog.Info("request",
+		level := logLevelForStatus(wrapped.statusCode)
+		slog.Log(r.Context(), level, "request completed",
+			"request_id", GetRequestID(r.Context()),
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", wrapped.statusCode,
 			"duration_ms", time.Since(start).Milliseconds(),
+			"remote_addr", r.RemoteAddr,
 		)
 	})
 }

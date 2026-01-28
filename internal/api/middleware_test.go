@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 const testAPIKey = "test-secret-key-12345"
@@ -420,6 +421,294 @@ func TestRecoveryMiddleware_Panic(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "something went wrong") {
 		t.Error("expected panic message in log output")
+	}
+}
+
+// --- Structured Logging Tests (Story 1.7) ---
+
+func TestGetRequestID(t *testing.T) {
+	// Use Chi's middleware to inject a request ID
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := GetRequestID(r.Context())
+		if reqID == "" {
+			t.Error("GetRequestID returned empty string, expected Chi-generated ID")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(reqID))
+	})
+
+	router := chi.NewRouter()
+	router.Use(chiMiddleware.RequestID)
+	router.Get("/test", handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// The body should contain the request ID (non-empty)
+	body := w.Body.String()
+	if body == "" {
+		t.Error("expected non-empty request ID in response body")
+	}
+}
+
+func TestGetRequestID_NoContext(t *testing.T) {
+	// When no request ID is in context, should return empty string
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	reqID := GetRequestID(req.Context())
+	if reqID != "" {
+		t.Errorf("GetRequestID without context = %q, want empty string", reqID)
+	}
+}
+
+func TestLogLevelForStatus(t *testing.T) {
+	tests := []struct {
+		status int
+		want   slog.Level
+	}{
+		{200, slog.LevelInfo},
+		{201, slog.LevelInfo},
+		{204, slog.LevelInfo},
+		{301, slog.LevelInfo},
+		{304, slog.LevelInfo},
+		{400, slog.LevelWarn},
+		{401, slog.LevelWarn},
+		{404, slog.LevelWarn},
+		{422, slog.LevelWarn},
+		{499, slog.LevelWarn},
+		{500, slog.LevelError},
+		{502, slog.LevelError},
+		{503, slog.LevelError},
+	}
+
+	for _, tt := range tests {
+		t.Run(http.StatusText(tt.status), func(t *testing.T) {
+			got := logLevelForStatus(tt.status)
+			if got != tt.want {
+				t.Errorf("logLevelForStatus(%d) = %v, want %v", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoggingMiddleware_RequestIDIncluded(t *testing.T) {
+	var logBuf bytes.Buffer
+	handler := slog.NewJSONHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Use Chi's RequestID middleware to inject request ID
+	router := chi.NewRouter()
+	router.Use(chiMiddleware.RequestID)
+	router.Use(LoggingMiddleware)
+	router.Get("/test", innerHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	logOutput := logBuf.String()
+
+	// Parse JSON to verify request_id field exists and is non-empty
+	var logEntry map[string]interface{}
+	if err := json.Unmarshal([]byte(logOutput), &logEntry); err != nil {
+		t.Fatalf("failed to parse log as JSON: %v", err)
+	}
+
+	reqID, ok := logEntry["request_id"]
+	if !ok {
+		t.Error("log entry missing 'request_id' field")
+	}
+	if reqID == "" {
+		t.Error("request_id is empty")
+	}
+}
+
+func TestLoggingMiddleware_RemoteAddrIncluded(t *testing.T) {
+	var logBuf bytes.Buffer
+	handler := slog.NewJSONHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := LoggingMiddleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "192.168.1.100:54321"
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	logOutput := logBuf.String()
+
+	var logEntry map[string]interface{}
+	if err := json.Unmarshal([]byte(logOutput), &logEntry); err != nil {
+		t.Fatalf("failed to parse log as JSON: %v", err)
+	}
+
+	remoteAddr, ok := logEntry["remote_addr"]
+	if !ok {
+		t.Error("log entry missing 'remote_addr' field")
+	}
+	if remoteAddr != "192.168.1.100:54321" {
+		t.Errorf("remote_addr = %v, want 192.168.1.100:54321", remoteAddr)
+	}
+}
+
+func TestLoggingMiddleware_LogLevelByStatus_2xx(t *testing.T) {
+	var logBuf bytes.Buffer
+	handler := slog.NewJSONHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := LoggingMiddleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	logOutput := logBuf.String()
+
+	if !strings.Contains(logOutput, `"level":"INFO"`) {
+		t.Errorf("expected INFO level for 2xx status, got: %s", logOutput)
+	}
+}
+
+func TestLoggingMiddleware_LogLevelByStatus_4xx(t *testing.T) {
+	var logBuf bytes.Buffer
+	handler := slog.NewJSONHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
+
+	middleware := LoggingMiddleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	logOutput := logBuf.String()
+
+	if !strings.Contains(logOutput, `"level":"WARN"`) {
+		t.Errorf("expected WARN level for 4xx status, got: %s", logOutput)
+	}
+}
+
+func TestLoggingMiddleware_LogLevelByStatus_5xx(t *testing.T) {
+	var logBuf bytes.Buffer
+	handler := slog.NewJSONHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	middleware := LoggingMiddleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	logOutput := logBuf.String()
+
+	if !strings.Contains(logOutput, `"level":"ERROR"`) {
+		t.Errorf("expected ERROR level for 5xx status, got: %s", logOutput)
+	}
+}
+
+func TestLoggingMiddleware_SnakeCaseFields(t *testing.T) {
+	var logBuf bytes.Buffer
+	handler := slog.NewJSONHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := LoggingMiddleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	logOutput := logBuf.String()
+
+	var logEntry map[string]interface{}
+	if err := json.Unmarshal([]byte(logOutput), &logEntry); err != nil {
+		t.Fatalf("failed to parse log as JSON: %v", err)
+	}
+
+	// slog standard fields (time, level, msg) are allowed
+	slogStandardFields := map[string]bool{"time": true, "level": true, "msg": true}
+
+	for key := range logEntry {
+		if slogStandardFields[key] {
+			continue
+		}
+		// Check for snake_case: no hyphens, no uppercase letters
+		if strings.Contains(key, "-") {
+			t.Errorf("field %q contains hyphen, should be snake_case", key)
+		}
+		if key != strings.ToLower(key) {
+			t.Errorf("field %q contains uppercase letters, should be snake_case", key)
+		}
+	}
+
+	// Verify expected fields exist
+	expectedFields := []string{"request_id", "method", "path", "status", "duration_ms", "remote_addr"}
+	for _, field := range expectedFields {
+		if _, ok := logEntry[field]; !ok {
+			t.Errorf("missing expected field: %s", field)
+		}
+	}
+}
+
+func TestLoggingMiddleware_MessageChanged(t *testing.T) {
+	var logBuf bytes.Buffer
+	handler := slog.NewJSONHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := LoggingMiddleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	logOutput := logBuf.String()
+
+	if !strings.Contains(logOutput, `"msg":"request completed"`) {
+		t.Errorf("expected message 'request completed', got: %s", logOutput)
 	}
 }
 
