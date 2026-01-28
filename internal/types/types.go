@@ -94,11 +94,11 @@ type DeltaResponse struct {
 
 // HealthResponse represents the health check response
 type HealthResponse struct {
-	Status         string `json:"status"`
-	Version        string `json:"version"`
-	EmbeddingModel string `json:"embedding_model"`
-	LoreCount      int    `json:"lore_count"`
-	LastSnapshot   string `json:"last_snapshot,omitempty"`
+	Status         string     `json:"status"`
+	Version        string     `json:"version"`
+	EmbeddingModel string     `json:"embedding_model"`
+	LoreCount      int64      `json:"lore_count"`
+	LastSnapshot   *time.Time `json:"last_snapshot"`
 }
 
 // --- Architecture-aligned domain types (Story 1.1) ---
@@ -172,7 +172,7 @@ type StoreMetadata struct {
 
 // StoreStats holds aggregate store statistics.
 type StoreStats struct {
-	LoreCount    int        `json:"lore_count"`
+	LoreCount    int64      `json:"lore_count"`
 	LastSnapshot *time.Time `json:"last_snapshot,omitempty"`
 }
 

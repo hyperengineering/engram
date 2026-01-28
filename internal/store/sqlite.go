@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/binary"
 	"fmt"
@@ -99,6 +100,20 @@ func (s *SQLiteStore) Count() (int, error) {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&count)
 	return count, err
+}
+
+// GetStats returns aggregate store statistics
+func (s *SQLiteStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&count)
+	if err != nil {
+		return nil, err
+	}
+
+	return &types.StoreStats{
+		LoreCount:    count,
+		LastSnapshot: nil, // Snapshot tracking not yet implemented
+	}, nil
 }
 
 // FindSimilar finds lore entries similar to the given embedding
