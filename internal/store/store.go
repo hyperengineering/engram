@@ -23,6 +23,7 @@ type Store interface {
 	DecayConfidence(ctx context.Context, threshold time.Time, amount float64) (int64, error)
 	GetPendingEmbeddings(ctx context.Context, limit int) ([]types.LoreEntry, error)
 	UpdateEmbedding(ctx context.Context, id string, embedding []float32) error
+	MarkEmbeddingFailed(ctx context.Context, id string) error
 	GetStats(ctx context.Context) (*types.StoreStats, error)
 	Close() error
 }

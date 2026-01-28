@@ -854,3 +854,115 @@ func TestConcurrentReadWrite(t *testing.T) {
 		t.Errorf("Read error during concurrent write: %v", err)
 	}
 }
+
+// --- MarkEmbeddingFailed Tests ---
+
+func TestMarkEmbeddingFailed_Success(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry with pending embedding status
+	entry := types.NewLoreEntry{
+		Content:    "Test content for failed embedding",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "test-source",
+	}
+
+	result, err := db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted != 1 {
+		t.Fatalf("Expected 1 accepted, got %d", result.Accepted)
+	}
+
+	// Get the entry to find its ID
+	pending, err := db.GetPendingEmbeddings(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("Expected 1 pending entry, got %d", len(pending))
+	}
+	id := pending[0].ID
+
+	// Mark as failed
+	err = db.MarkEmbeddingFailed(context.Background(), id)
+	if err != nil {
+		t.Errorf("MarkEmbeddingFailed() error = %v", err)
+	}
+
+	// Verify it's no longer in pending list
+	pending, err = db.GetPendingEmbeddings(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending entries after marking failed, got %d", len(pending))
+	}
+
+	// Verify the entry still exists and has failed status
+	entry2, err := db.GetLore(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry2.EmbeddingStatus != "failed" {
+		t.Errorf("Expected embedding_status 'failed', got %q", entry2.EmbeddingStatus)
+	}
+}
+
+func TestMarkEmbeddingFailed_NotFound(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	err = db.MarkEmbeddingFailed(context.Background(), "nonexistent-id")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestMarkEmbeddingFailed_ExcludesDeleted(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry
+	entry := types.NewLoreEntry{
+		Content:    "Test content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "test-source",
+	}
+
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := db.GetPendingEmbeddings(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := pending[0].ID
+
+	// Soft-delete the entry directly via SQL
+	_, err = db.db.Exec("UPDATE lore_entries SET deleted_at = datetime('now') WHERE id = ?", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to mark as failed - should return ErrNotFound
+	err = db.MarkEmbeddingFailed(context.Background(), id)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound for soft-deleted entry, got %v", err)
+	}
+}

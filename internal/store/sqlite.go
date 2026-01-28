@@ -350,6 +350,31 @@ func (s *SQLiteStore) UpdateEmbedding(ctx context.Context, id string, embedding 
 	return nil
 }
 
+// MarkEmbeddingFailed marks an entry's embedding as permanently failed.
+func (s *SQLiteStore) MarkEmbeddingFailed(ctx context.Context, id string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE lore_entries
+		SET embedding_status = 'failed', updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, now, id)
+	if err != nil {
+		return fmt.Errorf("mark embedding failed: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
 // --- Stub implementations for remaining Store interface methods ---
 // These will be implemented in future stories.
 

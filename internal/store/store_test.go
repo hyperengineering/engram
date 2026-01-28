@@ -52,6 +52,9 @@ func (m *mockStore) GetPendingEmbeddings(ctx context.Context, limit int) ([]type
 func (m *mockStore) UpdateEmbedding(ctx context.Context, id string, embedding []float32) error {
 	return nil
 }
+func (m *mockStore) MarkEmbeddingFailed(ctx context.Context, id string) error {
+	return nil
+}
 func (m *mockStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 	return nil, nil
 }

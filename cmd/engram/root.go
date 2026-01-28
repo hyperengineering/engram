@@ -15,6 +15,7 @@ import (
 	"github.com/hyperengineering/engram/internal/config"
 	"github.com/hyperengineering/engram/internal/embedding"
 	"github.com/hyperengineering/engram/internal/store"
+	"github.com/hyperengineering/engram/internal/worker"
 	"github.com/spf13/cobra"
 )
 
@@ -74,10 +75,20 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// 8. Worker lifecycle infrastructure
 	var wg sync.WaitGroup
+
+	// Initialize and start embedding retry worker
+	embeddingRetryWorker := worker.NewEmbeddingRetryWorker(
+		db,
+		embedder,
+		time.Duration(cfg.Worker.EmbeddingRetryInterval),
+		cfg.Worker.EmbeddingRetryMaxAttempts,
+		50, // batch size
+	)
+	startWorker(ctx, &wg, "embedding-retry", embeddingRetryWorker.Run)
+
 	// Future workers plug in here:
 	// startWorker(ctx, &wg, "snapshot", snapshotWorker.Run)
 	// startWorker(ctx, &wg, "decay", decayWorker.Run)
-	// startWorker(ctx, &wg, "embedding-retry", embeddingRetryWorker.Run)
 
 	// 9. Start HTTP server in goroutine
 	go func() {
