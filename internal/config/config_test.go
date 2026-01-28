@@ -30,6 +30,7 @@ func clearEnv(t *testing.T) {
 		"ENGRAM_LOG_FORMAT",
 		"ENGRAM_CONFIG_PATH",
 		"ENGRAM_DEV_MODE",
+		"ENGRAM_SIMILARITY_THRESHOLD",
 		"ENGRAM_ADDRESS", // legacy
 	}
 	for _, v := range envVars {
@@ -112,6 +113,11 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.Log.Format != "json" {
 		t.Errorf("Log.Format = %q, want %q", cfg.Log.Format, "json")
+	}
+
+	// Deduplication defaults
+	if cfg.Deduplication.SimilarityThreshold != 0.92 {
+		t.Errorf("Deduplication.SimilarityThreshold = %v, want 0.92", cfg.Deduplication.SimilarityThreshold)
 	}
 }
 
@@ -506,5 +512,91 @@ func TestLoad_AllEnvVarMappings(t *testing.T) {
 	}
 	if cfg.Log.Format != "text" {
 		t.Errorf("Log.Format = %q, want %q", cfg.Log.Format, "text")
+	}
+}
+
+// --- Deduplication Config Tests (Story 3.1) ---
+
+// Test: SimilarityThreshold default value
+func TestConfig_SimilarityThreshold_Default(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Deduplication.SimilarityThreshold != 0.92 {
+		t.Errorf("Deduplication.SimilarityThreshold = %v, want 0.92", cfg.Deduplication.SimilarityThreshold)
+	}
+}
+
+// Test: ENGRAM_SIMILARITY_THRESHOLD env var overrides default
+func TestConfig_SimilarityThreshold_EnvOverride(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+	os.Setenv("ENGRAM_SIMILARITY_THRESHOLD", "0.85")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Deduplication.SimilarityThreshold != 0.85 {
+		t.Errorf("Deduplication.SimilarityThreshold = %v, want 0.85", cfg.Deduplication.SimilarityThreshold)
+	}
+}
+
+// Test: SimilarityThreshold from YAML file
+func TestConfig_SimilarityThreshold_FromYAML(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	yamlContent := `
+deduplication:
+  similarity_threshold: 0.88
+`
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := LoadFromFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.Deduplication.SimilarityThreshold != 0.88 {
+		t.Errorf("Deduplication.SimilarityThreshold = %v, want 0.88", cfg.Deduplication.SimilarityThreshold)
+	}
+}
+
+// Test: Env var overrides YAML for SimilarityThreshold
+func TestConfig_SimilarityThreshold_EnvOverridesYAML(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	yamlContent := `
+deduplication:
+  similarity_threshold: 0.88
+`
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	os.Setenv("ENGRAM_CONFIG_PATH", configPath)
+	os.Setenv("ENGRAM_SIMILARITY_THRESHOLD", "0.95") // Should override YAML
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Deduplication.SimilarityThreshold != 0.95 {
+		t.Errorf("Deduplication.SimilarityThreshold = %v, want 0.95 (env override)", cfg.Deduplication.SimilarityThreshold)
 	}
 }

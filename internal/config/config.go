@@ -13,12 +13,13 @@ import (
 // Config is the root configuration structure.
 // It is read-only after Load() returns and thread-safe for concurrent reads.
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Database  DatabaseConfig  `yaml:"database"`
-	Embedding EmbeddingConfig `yaml:"embedding"`
-	Auth      AuthConfig      `yaml:"auth"`
-	Worker    WorkerConfig    `yaml:"worker"`
-	Log       LogConfig       `yaml:"log"`
+	Server        ServerConfig        `yaml:"server"`
+	Database      DatabaseConfig      `yaml:"database"`
+	Embedding     EmbeddingConfig     `yaml:"embedding"`
+	Auth          AuthConfig          `yaml:"auth"`
+	Worker        WorkerConfig        `yaml:"worker"`
+	Log           LogConfig           `yaml:"log"`
+	Deduplication DeduplicationConfig `yaml:"deduplication"`
 }
 
 // ServerConfig contains HTTP server settings.
@@ -58,6 +59,11 @@ type WorkerConfig struct {
 type LogConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+}
+
+// DeduplicationConfig contains semantic deduplication settings.
+type DeduplicationConfig struct {
+	SimilarityThreshold float64 `yaml:"similarity_threshold"`
 }
 
 // Duration is a wrapper around time.Duration that supports YAML string parsing.
@@ -158,6 +164,9 @@ func newDefaults() *Config {
 			Level:  "info",
 			Format: "json",
 		},
+		Deduplication: DeduplicationConfig{
+			SimilarityThreshold: 0.92,
+		},
 	}
 }
 
@@ -251,6 +260,13 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("ENGRAM_LOG_FORMAT"); v != "" {
 		cfg.Log.Format = v
+	}
+
+	// Deduplication
+	if v := os.Getenv("ENGRAM_SIMILARITY_THRESHOLD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Deduplication.SimilarityThreshold = f
+		}
 	}
 }
 

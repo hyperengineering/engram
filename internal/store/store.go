@@ -11,7 +11,7 @@ import (
 // Store defines the interface contract for all lore storage operations.
 type Store interface {
 	IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error)
-	FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.LoreEntry, error)
+	FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.SimilarEntry, error)
 	MergeLore(ctx context.Context, targetID string, source types.NewLoreEntry) error
 	GetLore(ctx context.Context, id string) (*types.LoreEntry, error)
 	GetMetadata(ctx context.Context) (*types.StoreMetadata, error)

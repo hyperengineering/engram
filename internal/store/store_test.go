@@ -16,7 +16,7 @@ var _ Store = (*mockStore)(nil)
 func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
 	return nil, nil
 }
-func (m *mockStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.LoreEntry, error) {
+func (m *mockStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.SimilarEntry, error) {
 	return nil, nil
 }
 func (m *mockStore) MergeLore(ctx context.Context, targetID string, source types.NewLoreEntry) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"regexp"
 	"sync"
 	"testing"
@@ -964,5 +965,316 @@ func TestMarkEmbeddingFailed_ExcludesDeleted(t *testing.T) {
 	err = db.MarkEmbeddingFailed(context.Background(), id)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Expected ErrNotFound for soft-deleted entry, got %v", err)
+	}
+}
+
+// --- FindSimilar Tests ---
+
+// makeTestEmbedding creates a normalized embedding for testing.
+// Using a simple pattern: first dimension has value 1.0, rest are 0.
+// This makes cosine similarity calculation predictable.
+func makeTestEmbedding(dim int) []float32 {
+	emb := make([]float32, 1536)
+	emb[dim%1536] = 1.0
+	return emb
+}
+
+// makeIdenticalEmbedding creates an embedding identical to another (cosine similarity = 1.0).
+func makeIdenticalEmbedding(base []float32) []float32 {
+	emb := make([]float32, len(base))
+	copy(emb, base)
+	return emb
+}
+
+// makeOrthogonalEmbedding creates an embedding orthogonal to another (cosine similarity = 0.0).
+func makeOrthogonalEmbedding(base []float32) []float32 {
+	emb := make([]float32, len(base))
+	// Find the first dimension with value and set a different one
+	for i := range base {
+		if base[i] != 0 {
+			emb[(i+1)%len(base)] = 1.0
+			return emb
+		}
+	}
+	emb[0] = 1.0
+	return emb
+}
+
+// makeSimilarEmbedding creates an embedding with a specific target similarity to the base.
+// Uses weighted combination: result = cos(angle)*base + sin(angle)*orthogonal
+// where angle = acos(targetSimilarity)
+func makeSimilarEmbedding(base []float32, targetSimilarity float64) []float32 {
+	if targetSimilarity >= 1.0 {
+		return makeIdenticalEmbedding(base)
+	}
+	if targetSimilarity <= 0.0 {
+		return makeOrthogonalEmbedding(base)
+	}
+
+	emb := make([]float32, len(base))
+	orthogonal := makeOrthogonalEmbedding(base)
+
+	// For cosine similarity S, use angle θ = acos(S)
+	// result = cos(θ)*base + sin(θ)*orthogonal
+	cosAngle := targetSimilarity
+	sinAngle := math.Sqrt(1.0 - cosAngle*cosAngle)
+
+	for i := range emb {
+		emb[i] = float32(cosAngle)*base[i] + float32(sinAngle)*orthogonal[i]
+	}
+	return emb
+}
+
+// setupFindSimilarTest creates a store with test entries that have known embeddings.
+func setupFindSimilarTest(t *testing.T) (*SQLiteStore, []float32) {
+	t.Helper()
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a base embedding for similarity calculations
+	baseEmbedding := makeTestEmbedding(0)
+
+	return db, baseEmbedding
+}
+
+// insertEntryWithEmbedding is a helper to insert an entry and set its embedding.
+func insertEntryWithEmbedding(t *testing.T, db *SQLiteStore, content, category string, embedding []float32) string {
+	t.Helper()
+
+	entry := types.NewLoreEntry{
+		Content:    content,
+		Category:   category,
+		Confidence: 0.8,
+		SourceID:   "test-source",
+	}
+
+	_, err := db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID of the just-inserted entry
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries WHERE content = ? ORDER BY created_at DESC LIMIT 1", content).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set the embedding
+	if embedding != nil {
+		err = db.UpdateEmbedding(context.Background(), id, embedding)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return id
+}
+
+func TestFindSimilar_ReturnsEntriesAboveThreshold(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert entries with different similarity levels
+	// Entry with identical embedding (similarity = 1.0)
+	insertEntryWithEmbedding(t, db, "Identical entry", "PATTERN_OUTCOME", makeIdenticalEmbedding(baseEmbedding))
+
+	// Entry with high similarity (0.95)
+	insertEntryWithEmbedding(t, db, "High similarity", "PATTERN_OUTCOME", makeSimilarEmbedding(baseEmbedding, 0.95))
+
+	// Entry with low similarity (0.5) - should be excluded
+	insertEntryWithEmbedding(t, db, "Low similarity", "PATTERN_OUTCOME", makeSimilarEmbedding(baseEmbedding, 0.5))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "PATTERN_OUTCOME", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should return 2 entries (1.0 and 0.95, both >= 0.92)
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results above threshold 0.92, got %d", len(results))
+	}
+}
+
+func TestFindSimilar_ExcludesEntriesBelowThreshold(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert entry just below threshold (0.91)
+	insertEntryWithEmbedding(t, db, "Just below threshold", "PATTERN_OUTCOME", makeSimilarEmbedding(baseEmbedding, 0.91))
+
+	// Insert entry at threshold (0.92) - should be included
+	insertEntryWithEmbedding(t, db, "At threshold", "PATTERN_OUTCOME", makeSimilarEmbedding(baseEmbedding, 0.92))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "PATTERN_OUTCOME", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should return only 1 entry (at threshold)
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result at threshold, got %d", len(results))
+	}
+
+	if len(results) > 0 && results[0].Content != "At threshold" {
+		t.Errorf("Expected 'At threshold' entry, got %q", results[0].Content)
+	}
+}
+
+func TestFindSimilar_FiltersByCategory(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert identical embedding in target category
+	insertEntryWithEmbedding(t, db, "Same category", "DEPENDENCY_BEHAVIOR", makeIdenticalEmbedding(baseEmbedding))
+
+	// Insert identical embedding in different category - should be excluded
+	insertEntryWithEmbedding(t, db, "Different category", "PATTERN_OUTCOME", makeIdenticalEmbedding(baseEmbedding))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "DEPENDENCY_BEHAVIOR", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should return only the entry from DEPENDENCY_BEHAVIOR category
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result from matching category, got %d", len(results))
+	}
+
+	if len(results) > 0 && results[0].Category != "DEPENDENCY_BEHAVIOR" {
+		t.Errorf("Expected category DEPENDENCY_BEHAVIOR, got %q", results[0].Category)
+	}
+}
+
+func TestFindSimilar_OrdersBySimilarityDescending(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert in non-sorted order
+	insertEntryWithEmbedding(t, db, "Medium similarity", "PATTERN_OUTCOME", makeSimilarEmbedding(baseEmbedding, 0.95))
+	insertEntryWithEmbedding(t, db, "Highest similarity", "PATTERN_OUTCOME", makeIdenticalEmbedding(baseEmbedding))
+	insertEntryWithEmbedding(t, db, "Lower similarity", "PATTERN_OUTCOME", makeSimilarEmbedding(baseEmbedding, 0.93))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "PATTERN_OUTCOME", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("Expected 3 results, got %d", len(results))
+	}
+
+	// Verify descending order
+	for i := 1; i < len(results); i++ {
+		if results[i].Similarity > results[i-1].Similarity {
+			t.Errorf("Results not sorted descending: results[%d].Similarity=%v > results[%d].Similarity=%v",
+				i, results[i].Similarity, i-1, results[i-1].Similarity)
+		}
+	}
+
+	// First result should be the highest similarity (identical embedding)
+	if results[0].Content != "Highest similarity" {
+		t.Errorf("Expected first result to be 'Highest similarity', got %q", results[0].Content)
+	}
+}
+
+func TestFindSimilar_ReturnsEmptySliceWhenNoMatches(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert entry with low similarity (below any reasonable threshold)
+	insertEntryWithEmbedding(t, db, "Very dissimilar", "PATTERN_OUTCOME", makeOrthogonalEmbedding(baseEmbedding))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "PATTERN_OUTCOME", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should return empty slice, not nil
+	if results == nil {
+		t.Error("Expected empty slice, got nil")
+	}
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results, got %d", len(results))
+	}
+}
+
+func TestFindSimilar_ExcludesEntriesWithoutEmbeddings(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert entry without embedding (nil)
+	insertEntryWithEmbedding(t, db, "No embedding", "PATTERN_OUTCOME", nil)
+
+	// Insert entry with embedding
+	insertEntryWithEmbedding(t, db, "Has embedding", "PATTERN_OUTCOME", makeIdenticalEmbedding(baseEmbedding))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "PATTERN_OUTCOME", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should only return the entry with embedding
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result (with embedding), got %d", len(results))
+	}
+
+	if len(results) > 0 && results[0].Content != "Has embedding" {
+		t.Errorf("Expected 'Has embedding' entry, got %q", results[0].Content)
+	}
+}
+
+func TestFindSimilar_ExcludesDeletedEntries(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert entry and then soft-delete it
+	id := insertEntryWithEmbedding(t, db, "Deleted entry", "PATTERN_OUTCOME", makeIdenticalEmbedding(baseEmbedding))
+
+	// Soft-delete the entry
+	_, err := db.db.Exec("UPDATE lore_entries SET deleted_at = datetime('now') WHERE id = ?", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a non-deleted entry
+	insertEntryWithEmbedding(t, db, "Active entry", "PATTERN_OUTCOME", makeIdenticalEmbedding(baseEmbedding))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "PATTERN_OUTCOME", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should only return the non-deleted entry
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result (non-deleted), got %d", len(results))
+	}
+
+	if len(results) > 0 && results[0].Content != "Active entry" {
+		t.Errorf("Expected 'Active entry', got %q", results[0].Content)
+	}
+}
+
+func TestFindSimilar_IncludesSimilarityScoreInResult(t *testing.T) {
+	db, baseEmbedding := setupFindSimilarTest(t)
+	defer db.Close()
+
+	// Insert entry with identical embedding (similarity should be 1.0)
+	insertEntryWithEmbedding(t, db, "Identical entry", "PATTERN_OUTCOME", makeIdenticalEmbedding(baseEmbedding))
+
+	results, err := db.FindSimilar(context.Background(), baseEmbedding, "PATTERN_OUTCOME", 0.92)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(results))
+	}
+
+	// Similarity should be very close to 1.0 for identical embeddings
+	if results[0].Similarity < 0.99 {
+		t.Errorf("Expected similarity ~1.0 for identical embedding, got %v", results[0].Similarity)
 	}
 }

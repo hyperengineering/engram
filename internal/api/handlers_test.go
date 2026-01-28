@@ -35,7 +35,7 @@ func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry
 	return &types.IngestResult{Accepted: len(entries)}, nil
 }
 
-func (m *mockStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.LoreEntry, error) {
+func (m *mockStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.SimilarEntry, error) {
 	return nil, nil
 }
 

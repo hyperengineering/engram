@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/hyperengineering/engram/internal/types"
@@ -138,14 +139,17 @@ func unpackEmbedding(b []byte) []float32 {
 	return v
 }
 
-func cosineSimilarity(a, b []float32) float32 {
-	var dot, normA, normB float32
+func cosineSimilarity(a, b []float32) float64 {
+	var dot, normA, normB float64
 	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
+		dot += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
 	}
-	return dot / (float32(math.Sqrt(float64(normA))) * float32(math.Sqrt(float64(normB))))
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
 // scanLoreEntry scans a row into a LoreEntry, handling BLOB unpacking and JSON parsing.
@@ -375,14 +379,58 @@ func (s *SQLiteStore) MarkEmbeddingFailed(ctx context.Context, id string) error 
 	return nil
 }
 
+// FindSimilar finds lore entries similar to the given embedding within the same category.
+// Returns entries with cosine similarity >= threshold, ordered by similarity descending.
+func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.SimilarEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, content, context, category, confidence, embedding, embedding_status,
+		       source_id, sources, validation_count, created_at, updated_at, deleted_at, last_validated_at
+		FROM lore_entries
+		WHERE category = ? AND embedding IS NOT NULL AND deleted_at IS NULL
+	`, category)
+	if err != nil {
+		return nil, fmt.Errorf("query similar entries: %w", err)
+	}
+	defer rows.Close()
+
+	var results []types.SimilarEntry
+	for rows.Next() {
+		entry, err := scanLoreEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+
+		// Calculate cosine similarity
+		similarity := cosineSimilarity(embedding, entry.Embedding)
+
+		// Filter by threshold
+		if similarity >= threshold {
+			results = append(results, types.SimilarEntry{
+				LoreEntry:  *entry,
+				Similarity: similarity,
+			})
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+
+	// Sort by similarity descending
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Similarity > results[j].Similarity
+	})
+
+	// Return empty slice (not nil) when no matches
+	if results == nil {
+		results = []types.SimilarEntry{}
+	}
+
+	return results, nil
+}
+
 // --- Stub implementations for remaining Store interface methods ---
 // These will be implemented in future stories.
-
-// FindSimilar finds lore entries similar to the given embedding (new interface signature).
-// TODO: Implement in Story 3.1 (Cosine Similarity Detection)
-func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.LoreEntry, error) {
-	return nil, ErrNotImplemented
-}
 
 // MergeLore merges a source entry into an existing target entry.
 // TODO: Implement in Story 3.2 (Lore Merge Strategy)

@@ -176,6 +176,12 @@ type StoreStats struct {
 	LastSnapshot *time.Time `json:"last_snapshot,omitempty"`
 }
 
+// SimilarEntry represents a lore entry with its similarity score.
+type SimilarEntry struct {
+	LoreEntry
+	Similarity float64 `json:"similarity"`
+}
+
 // MarshalJSON ensures nil slices in LoreEntry marshal as [] not null.
 func (l LoreEntry) MarshalJSON() ([]byte, error) {
 	if l.Sources == nil {
