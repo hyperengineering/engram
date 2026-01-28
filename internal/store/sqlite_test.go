@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1276,5 +1277,417 @@ func TestFindSimilar_IncludesSimilarityScoreInResult(t *testing.T) {
 	// Similarity should be very close to 1.0 for identical embeddings
 	if results[0].Similarity < 0.99 {
 		t.Errorf("Expected similarity ~1.0 for identical embedding, got %v", results[0].Similarity)
+	}
+}
+
+// --- Helper Function Tests (Story 3.2) ---
+
+func TestAppendContext_EmptyExisting(t *testing.T) {
+	result := appendContext("", "new context")
+	if result != "new context" {
+		t.Errorf("Expected 'new context', got %q", result)
+	}
+}
+
+func TestAppendContext_EmptyNew(t *testing.T) {
+	result := appendContext("existing context", "")
+	if result != "existing context" {
+		t.Errorf("Expected 'existing context', got %q", result)
+	}
+}
+
+func TestAppendContext_BothNonEmpty(t *testing.T) {
+	result := appendContext("existing", "new")
+	expected := "existing\n\n---\n\nnew"
+	if result != expected {
+		t.Errorf("Expected %q, got %q", expected, result)
+	}
+}
+
+func TestAppendContext_TruncatesLongNewContext(t *testing.T) {
+	existing := "short"
+	// Create a new context that would exceed 1000 chars total
+	newCtx := strings.Repeat("x", 1000)
+
+	result := appendContext(existing, newCtx)
+
+	if len(result) > MaxContextLength {
+		t.Errorf("Result length %d exceeds MaxContextLength %d", len(result), MaxContextLength)
+	}
+	if !strings.HasSuffix(result, "...") {
+		t.Error("Expected truncation marker '...' at end")
+	}
+	if !strings.HasPrefix(result, "short\n\n---\n\n") {
+		t.Errorf("Expected existing context preserved, got %q", result[:20])
+	}
+}
+
+func TestAppendContext_PreservesExistingWhenNoRoom(t *testing.T) {
+	// Existing context at max length
+	existing := strings.Repeat("x", MaxContextLength)
+	result := appendContext(existing, "new context")
+
+	if result != existing {
+		t.Error("Expected existing context to be preserved when no room")
+	}
+}
+
+func TestAppendContext_TruncatesNewContextAtEmptyExisting(t *testing.T) {
+	// New context exceeds 1000 chars with empty existing
+	newCtx := strings.Repeat("x", 1500)
+	result := appendContext("", newCtx)
+
+	if len(result) != MaxContextLength {
+		t.Errorf("Expected length %d, got %d", MaxContextLength, len(result))
+	}
+	if !strings.HasSuffix(result, "...") {
+		t.Error("Expected truncation marker '...'")
+	}
+}
+
+func TestAddSourceID_AddsNewSource(t *testing.T) {
+	sources := []string{"source-1", "source-2"}
+	result, added := addSourceID(sources, "source-3")
+
+	if !added {
+		t.Error("Expected added=true for new source")
+	}
+	if len(result) != 3 {
+		t.Errorf("Expected 3 sources, got %d", len(result))
+	}
+	if result[2] != "source-3" {
+		t.Errorf("Expected 'source-3' at end, got %q", result[2])
+	}
+}
+
+func TestAddSourceID_SkipsDuplicate(t *testing.T) {
+	sources := []string{"source-1", "source-2"}
+	result, added := addSourceID(sources, "source-1")
+
+	if added {
+		t.Error("Expected added=false for duplicate source")
+	}
+	if len(result) != 2 {
+		t.Errorf("Expected 2 sources (unchanged), got %d", len(result))
+	}
+}
+
+func TestAddSourceID_EmptySlice(t *testing.T) {
+	sources := []string{}
+	result, added := addSourceID(sources, "first-source")
+
+	if !added {
+		t.Error("Expected added=true for first source")
+	}
+	if len(result) != 1 {
+		t.Errorf("Expected 1 source, got %d", len(result))
+	}
+}
+
+// --- MergeLore Tests (Story 3.2) ---
+
+// setupMergeLoreTest creates a store with a target entry for merge testing.
+func setupMergeLoreTest(t *testing.T, confidence float64, ctx string) (*SQLiteStore, string) {
+	t.Helper()
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a target entry
+	entry := types.NewLoreEntry{
+		Content:    "Target content",
+		Context:    ctx,
+		Category:   "PATTERN_OUTCOME",
+		Confidence: confidence,
+		SourceID:   "original-source",
+	}
+
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return db, id
+}
+
+func TestMergeLore_BoostsConfidenceBy010(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "source context",
+		SourceID: "merge-source",
+	}
+
+	err := db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify confidence boosted
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := 0.90
+	if math.Abs(updated.Confidence-expected) > 0.001 {
+		t.Errorf("Expected confidence %v, got %v", expected, updated.Confidence)
+	}
+}
+
+func TestMergeLore_CapsConfidenceAt10(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.95, "original context")
+	defer db.Close()
+
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "source context",
+		SourceID: "merge-source",
+	}
+
+	err := db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be capped at 1.0, not 1.05
+	if updated.Confidence > 1.0 {
+		t.Errorf("Confidence should be capped at 1.0, got %v", updated.Confidence)
+	}
+	if updated.Confidence != 1.0 {
+		t.Errorf("Expected confidence 1.0 (capped), got %v", updated.Confidence)
+	}
+}
+
+func TestMergeLore_AppendsContextWithSeparator(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "new context",
+		SourceID: "merge-source",
+	}
+
+	err := db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := "original context\n\n---\n\nnew context"
+	if updated.Context != expected {
+		t.Errorf("Expected context %q, got %q", expected, updated.Context)
+	}
+}
+
+func TestMergeLore_TruncatesContextAt1000Chars(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	// Create a very long source context
+	longContext := strings.Repeat("x", 2000)
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  longContext,
+		SourceID: "merge-source",
+	}
+
+	err := db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(updated.Context) > MaxContextLength {
+		t.Errorf("Context length %d exceeds max %d", len(updated.Context), MaxContextLength)
+	}
+}
+
+func TestMergeLore_AddsTruncationMarker(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	longContext := strings.Repeat("x", 2000)
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  longContext,
+		SourceID: "merge-source",
+	}
+
+	err := db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.HasSuffix(updated.Context, "...") {
+		t.Error("Expected truncation marker '...' at end of context")
+	}
+}
+
+func TestMergeLore_AddsSourceIdToArray(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "new context",
+		SourceID: "merge-source",
+	}
+
+	err := db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have both original-source and merge-source
+	if len(updated.Sources) != 2 {
+		t.Errorf("Expected 2 sources, got %d: %v", len(updated.Sources), updated.Sources)
+	}
+
+	found := false
+	for _, s := range updated.Sources {
+		if s == "merge-source" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected 'merge-source' in sources array: %v", updated.Sources)
+	}
+}
+
+func TestMergeLore_DoesNotDuplicateSourceId(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	// Merge with the same source_id that already exists
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "new context",
+		SourceID: "original-source", // Same as original
+	}
+
+	err := db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should still have only 1 source (no duplicate)
+	if len(updated.Sources) != 1 {
+		t.Errorf("Expected 1 source (no duplicate), got %d: %v", len(updated.Sources), updated.Sources)
+	}
+}
+
+func TestMergeLore_UpdatesTimestamp(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	// Get original timestamp
+	original, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(1100 * time.Millisecond) // Ensure timestamp changes
+
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "new context",
+		SourceID: "merge-source",
+	}
+
+	err = db.MergeLore(context.Background(), targetID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.GetLore(context.Background(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !updated.UpdatedAt.After(original.UpdatedAt) {
+		t.Errorf("Expected updated_at to be after original: original=%v, updated=%v",
+			original.UpdatedAt, updated.UpdatedAt)
+	}
+}
+
+func TestMergeLore_ReturnsErrNotFoundForMissingTarget(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "new context",
+		SourceID: "merge-source",
+	}
+
+	err = db.MergeLore(context.Background(), "nonexistent-id", source)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestMergeLore_ReturnsErrNotFoundForDeletedTarget(t *testing.T) {
+	db, targetID := setupMergeLoreTest(t, 0.80, "original context")
+	defer db.Close()
+
+	// Soft-delete the target
+	_, err := db.db.Exec("UPDATE lore_entries SET deleted_at = datetime('now') WHERE id = ?", targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := types.NewLoreEntry{
+		Content:  "Source content",
+		Context:  "new context",
+		SourceID: "merge-source",
+	}
+
+	err = db.MergeLore(context.Background(), targetID, source)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound for deleted target, got %v", err)
 	}
 }

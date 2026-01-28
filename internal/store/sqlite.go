@@ -22,6 +22,55 @@ import (
 // ErrNotImplemented is returned for Store interface methods not yet implemented.
 var ErrNotImplemented = errors.New("not implemented")
 
+// Constants for merge operations
+const (
+	ContextSeparator = "\n\n---\n\n" // 7 characters
+	MaxContextLength = 1000
+	ConfidenceBoost  = 0.10
+	MaxConfidence    = 1.0
+)
+
+// appendContext appends new context to existing, respecting the MaxContextLength limit.
+// Truncation applies to the new context only, preserving existing content.
+func appendContext(existing, new string) string {
+	if new == "" {
+		return existing
+	}
+
+	if existing == "" {
+		if len(new) > MaxContextLength {
+			return new[:MaxContextLength-3] + "..."
+		}
+		return new
+	}
+
+	available := MaxContextLength - len(existing) - len(ContextSeparator)
+
+	if available <= 0 {
+		return existing // No room to append
+	}
+
+	if len(new) > available {
+		if available <= 3 {
+			return existing // Not enough room even for "..."
+		}
+		return existing + ContextSeparator + new[:available-3] + "..."
+	}
+
+	return existing + ContextSeparator + new
+}
+
+// addSourceID adds a source ID to the sources slice if not already present.
+// Returns the updated slice and whether the ID was added.
+func addSourceID(sources []string, newSourceID string) ([]string, bool) {
+	for _, s := range sources {
+		if s == newSourceID {
+			return sources, false // Already present
+		}
+	}
+	return append(sources, newSourceID), true
+}
+
 // SQLiteStore represents the SQLite-backed lore database.
 type SQLiteStore struct {
 	db *sql.DB
@@ -433,9 +482,39 @@ func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, cate
 // These will be implemented in future stories.
 
 // MergeLore merges a source entry into an existing target entry.
-// TODO: Implement in Story 3.2 (Lore Merge Strategy)
+// It boosts confidence, appends context, and adds source_id to sources array.
 func (s *SQLiteStore) MergeLore(ctx context.Context, targetID string, source types.NewLoreEntry) error {
-	return ErrNotImplemented
+	// 1. Load target entry
+	target, err := s.GetLore(ctx, targetID)
+	if err != nil {
+		return err // Propagates ErrNotFound
+	}
+
+	// 2. Calculate new confidence (cap at 1.0)
+	newConfidence := math.Min(target.Confidence+ConfidenceBoost, MaxConfidence)
+
+	// 3. Append context (with truncation if needed)
+	newContext := appendContext(target.Context, source.Context)
+
+	// 4. Add source_id to sources array
+	newSources, _ := addSourceID(target.Sources, source.SourceID)
+	sourcesJSON, err := json.Marshal(newSources)
+	if err != nil {
+		return fmt.Errorf("marshal sources: %w", err)
+	}
+
+	// 5. Execute UPDATE
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE lore_entries
+		SET confidence = ?, context = ?, sources = ?, updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, newConfidence, newContext, string(sourcesJSON), now, targetID)
+	if err != nil {
+		return fmt.Errorf("update lore entry: %w", err)
+	}
+
+	return nil
 }
 
 // GetMetadata returns store-level metadata.
