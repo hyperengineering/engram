@@ -59,7 +59,7 @@ func run(cmd *cobra.Command, args []string) error {
 	slog.Info("embedder initialized", "model", cfg.Embedding.Model)
 
 	// 6. Initialize HTTP router
-	handler := api.NewHandlerWithLegacyStore(db, embedder, cfg.Auth.APIKey, Version)
+	handler := api.NewHandler(db, embedder, cfg.Auth.APIKey, Version)
 	router := api.NewRouter(handler)
 	slog.Info("router initialized")
 

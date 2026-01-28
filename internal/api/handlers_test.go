@@ -3,24 +3,82 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/types"
 )
 
 // --- Mock Implementations for Testing ---
 
-// mockHealthStore implements HealthStore interface for health endpoint testing
-type mockHealthStore struct {
+// mockStore implements store.Store interface for testing
+type mockStore struct {
 	stats    *types.StoreStats
 	statsErr error
 }
 
-func (m *mockHealthStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
+func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
+	return &types.IngestResult{Accepted: len(entries)}, nil
+}
+
+func (m *mockStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.LoreEntry, error) {
+	return nil, nil
+}
+
+func (m *mockStore) MergeLore(ctx context.Context, targetID string, source types.NewLoreEntry) error {
+	return nil
+}
+
+func (m *mockStore) GetLore(ctx context.Context, id string) (*types.LoreEntry, error) {
+	return nil, store.ErrNotFound
+}
+
+func (m *mockStore) GetMetadata(ctx context.Context) (*types.StoreMetadata, error) {
+	return nil, nil
+}
+
+func (m *mockStore) GetSnapshot(ctx context.Context) (io.ReadCloser, error) {
+	return nil, nil
+}
+
+func (m *mockStore) GetDelta(ctx context.Context, since time.Time) (*types.DeltaResult, error) {
+	return nil, nil
+}
+
+func (m *mockStore) GenerateSnapshot(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockStore) GetSnapshotPath(ctx context.Context) (string, error) {
+	return "", nil
+}
+
+func (m *mockStore) RecordFeedback(ctx context.Context, feedback []types.FeedbackEntry) (*types.FeedbackResult, error) {
+	return nil, nil
+}
+
+func (m *mockStore) DecayConfidence(ctx context.Context, threshold time.Time, amount float64) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockStore) GetPendingEmbeddings(ctx context.Context, limit int) ([]types.LoreEntry, error) {
+	return nil, nil
+}
+
+func (m *mockStore) UpdateEmbedding(ctx context.Context, id string, embedding []float32) error {
+	return nil
+}
+
+func (m *mockStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 	return m.stats, m.statsErr
+}
+
+func (m *mockStore) Close() error {
+	return nil
 }
 
 // mockEmbedder implements the embedding.Embedder interface for testing
@@ -41,20 +99,19 @@ func (m *mockEmbedder) ModelName() string {
 }
 
 // newTestHandler creates a Handler with minimal dependencies for health endpoint testing
-func newTestHandler(store HealthStore, embedder *mockEmbedder, apiKey, version string) *Handler {
+func newTestHandler(s store.Store, embedder *mockEmbedder, apiKey, version string) *Handler {
 	return &Handler{
-		store:       store,
-		legacyStore: nil,
-		embedder:    embedder,
-		apiKey:      apiKey,
-		version:     version,
+		store:    s,
+		embedder: embedder,
+		apiKey:   apiKey,
+		version:  version,
 	}
 }
 
 // --- Health Endpoint Tests ---
 
 func TestHealth_ReturnsHealthyStatus(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{LoreCount: 0},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
@@ -80,7 +137,7 @@ func TestHealth_ReturnsHealthyStatus(t *testing.T) {
 }
 
 func TestHealth_ReturnsCorrectJSONStructure(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{LoreCount: 42},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
@@ -107,7 +164,7 @@ func TestHealth_ReturnsCorrectJSONStructure(t *testing.T) {
 }
 
 func TestHealth_LoreCountReflectsStoreValue(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{LoreCount: 42},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
@@ -129,7 +186,7 @@ func TestHealth_LoreCountReflectsStoreValue(t *testing.T) {
 }
 
 func TestHealth_LastSnapshotNullWhenNone(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{
 			LoreCount:    0,
 			LastSnapshot: nil, // No snapshot
@@ -156,7 +213,7 @@ func TestHealth_LastSnapshotNullWhenNone(t *testing.T) {
 
 func TestHealth_LastSnapshotReturnsTimestamp(t *testing.T) {
 	snapshotTime := time.Date(2026, 1, 28, 10, 30, 0, 0, time.UTC)
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{
 			LoreCount:    10,
 			LastSnapshot: &snapshotTime,
@@ -185,7 +242,7 @@ func TestHealth_LastSnapshotReturnsTimestamp(t *testing.T) {
 }
 
 func TestHealth_NoAuthRequired(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{LoreCount: 0},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
@@ -204,7 +261,7 @@ func TestHealth_NoAuthRequired(t *testing.T) {
 }
 
 func TestHealth_ContentTypeJSON(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{LoreCount: 0},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
@@ -222,7 +279,7 @@ func TestHealth_ContentTypeJSON(t *testing.T) {
 }
 
 func TestHealth_EmbeddingModelFromEmbedder(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{LoreCount: 0},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-ada-002"}
@@ -244,7 +301,7 @@ func TestHealth_EmbeddingModelFromEmbedder(t *testing.T) {
 }
 
 func TestHealth_VersionFromConfig(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats: &types.StoreStats{LoreCount: 0},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
@@ -266,7 +323,7 @@ func TestHealth_VersionFromConfig(t *testing.T) {
 }
 
 func TestHealth_StoreErrorReturns500(t *testing.T) {
-	store := &mockHealthStore{
+	store := &mockStore{
 		stats:    nil,
 		statsErr: context.DeadlineExceeded, // Simulate store error
 	}
