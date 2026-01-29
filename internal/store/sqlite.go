@@ -40,6 +40,11 @@ const (
 	MinConfidence            = 0.0  // FR21: floor
 )
 
+// Decay constants (FR22)
+const (
+	DefaultDecayAmount = 0.01 // FR22: -0.01 per decay cycle
+)
+
 // appendContext appends new context to existing, respecting the MaxContextLength limit.
 // Truncation applies to the new context only, preserving existing content.
 func appendContext(existing, new string) string {
@@ -959,7 +964,23 @@ func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.Feedb
 }
 
 // DecayConfidence reduces confidence for entries not validated since threshold.
-// TODO: Implement in Story 5.2 (Confidence Decay Worker)
+// Entries with last_validated_at < threshold OR last_validated_at IS NULL are decayed.
+// Uses a single bulk UPDATE with floor enforcement via max(0.0, confidence - amount).
 func (s *SQLiteStore) DecayConfidence(ctx context.Context, threshold time.Time, amount float64) (int64, error) {
-	return 0, ErrNotImplemented
+	thresholdStr := threshold.UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE lore_entries
+		SET confidence = max(0.0, confidence - ?),
+		    updated_at = ?
+		WHERE deleted_at IS NULL
+		  AND (last_validated_at < ? OR last_validated_at IS NULL)
+	`, amount, now, thresholdStr)
+
+	if err != nil {
+		return 0, fmt.Errorf("decay confidence: %w", err)
+	}
+
+	return result.RowsAffected()
 }

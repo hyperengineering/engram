@@ -99,8 +99,13 @@ func run(cmd *cobra.Command, args []string) error {
 	)
 	startWorker(ctx, &wg, "snapshot-generation", snapshotWorker.Run)
 
-	// Future workers plug in here:
-	// startWorker(ctx, &wg, "decay", decayWorker.Run)
+	// Initialize and start confidence decay worker
+	decayWorker := worker.NewConfidenceDecayWorker(
+		db,
+		time.Duration(cfg.Worker.DecayInterval),
+		store.DefaultDecayAmount,
+	)
+	startWorker(ctx, &wg, "confidence-decay", decayWorker.Run)
 
 	// 10. Start HTTP server in goroutine
 	go func() {

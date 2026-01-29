@@ -3073,3 +3073,330 @@ func TestRecordFeedback_SoftDeleted(t *testing.T) {
 		t.Errorf("Expected ErrNotFound for soft-deleted entry, got %v", err)
 	}
 }
+
+// --- DecayConfidence Tests (Story 5.2) ---
+
+func TestDecayConfidence_AffectsStaleEntries(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry and set last_validated_at to old date
+	entries := []types.NewLoreEntry{
+		{Content: "Stale entry", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Set last_validated_at to 60 days ago
+	oldDate := time.Now().Add(-60 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	_, err = db.db.Exec("UPDATE lore_entries SET last_validated_at = ? WHERE id = ?", oldDate, loreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Decay with threshold of 30 days ago (should affect the 60-day-old entry)
+	threshold := time.Now().Add(-30 * 24 * time.Hour)
+	affected, err := db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if affected != 1 {
+		t.Errorf("affected = %d, want 1", affected)
+	}
+
+	// Verify confidence was reduced
+	entry, _ := db.GetLore(context.Background(), loreID)
+	expected := 0.49 // 0.5 - 0.01
+	if math.Abs(entry.Confidence-expected) > 0.001 {
+		t.Errorf("Confidence = %v, want %v", entry.Confidence, expected)
+	}
+}
+
+func TestDecayConfidence_IgnoresRecentlyValidated(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry and set last_validated_at to recent date
+	entries := []types.NewLoreEntry{
+		{Content: "Fresh entry", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Set last_validated_at to 10 days ago
+	recentDate := time.Now().Add(-10 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	_, err = db.db.Exec("UPDATE lore_entries SET last_validated_at = ? WHERE id = ?", recentDate, loreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Decay with threshold of 30 days ago (should NOT affect the 10-day-old entry)
+	threshold := time.Now().Add(-30 * 24 * time.Hour)
+	affected, err := db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if affected != 0 {
+		t.Errorf("affected = %d, want 0 (recently validated)", affected)
+	}
+
+	// Verify confidence was NOT reduced
+	entry, _ := db.GetLore(context.Background(), loreID)
+	if entry.Confidence != 0.5 {
+		t.Errorf("Confidence = %v, want 0.5 (unchanged)", entry.Confidence)
+	}
+}
+
+func TestDecayConfidence_AffectsNeverValidated(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry (last_validated_at will be NULL)
+	entries := []types.NewLoreEntry{
+		{Content: "Never validated", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Decay with any threshold (should affect entries with NULL last_validated_at)
+	threshold := time.Now().Add(-30 * 24 * time.Hour)
+	affected, err := db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if affected != 1 {
+		t.Errorf("affected = %d, want 1 (never validated)", affected)
+	}
+
+	entry, _ := db.GetLore(context.Background(), loreID)
+	expected := 0.49
+	if math.Abs(entry.Confidence-expected) > 0.001 {
+		t.Errorf("Confidence = %v, want %v", entry.Confidence, expected)
+	}
+}
+
+func TestDecayConfidence_FloorAtZero(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry with low confidence
+	entries := []types.NewLoreEntry{
+		{Content: "Low confidence", Category: "PATTERN_OUTCOME", Confidence: 0.005, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Decay by 0.01 (0.005 - 0.01 = -0.005, should floor at 0.0)
+	threshold := time.Now().Add(1 * time.Hour) // future threshold to affect all
+	affected, err := db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if affected != 1 {
+		t.Errorf("affected = %d, want 1", affected)
+	}
+
+	entry, _ := db.GetLore(context.Background(), loreID)
+	if entry.Confidence != 0.0 {
+		t.Errorf("Confidence = %v, want 0.0 (floored)", entry.Confidence)
+	}
+}
+
+func TestDecayConfidence_AlreadyAtZero(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry with zero confidence
+	entries := []types.NewLoreEntry{
+		{Content: "Zero confidence", Category: "PATTERN_OUTCOME", Confidence: 0.0, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Decay (should stay at 0.0)
+	threshold := time.Now().Add(1 * time.Hour)
+	_, err = db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Note: SQLite will still count this as "affected" even though value doesn't change
+	// This is expected SQL behavior - the row matches the WHERE clause
+
+	entry, _ := db.GetLore(context.Background(), loreID)
+	if entry.Confidence != 0.0 {
+		t.Errorf("Confidence = %v, want 0.0 (stays at floor)", entry.Confidence)
+	}
+}
+
+func TestDecayConfidence_IgnoresDeleted(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create and soft-delete an entry
+	entries := []types.NewLoreEntry{
+		{Content: "Deleted entry", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Soft delete
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = db.db.Exec("UPDATE lore_entries SET deleted_at = ? WHERE id = ?", now, loreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Decay (should not affect deleted entries)
+	threshold := time.Now().Add(1 * time.Hour)
+	affected, err := db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if affected != 0 {
+		t.Errorf("affected = %d, want 0 (soft-deleted)", affected)
+	}
+}
+
+func TestDecayConfidence_UpdatesTimestamp(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	entries := []types.NewLoreEntry{
+		{Content: "Test entry", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Set updated_at to an old timestamp
+	oldTimestamp := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	_, err = db.db.Exec("UPDATE lore_entries SET updated_at = ? WHERE id = ?", oldTimestamp, loreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the old timestamp
+	entryBefore, _ := db.GetLore(context.Background(), loreID)
+	originalUpdatedAt := entryBefore.UpdatedAt
+
+	// Decay
+	threshold := time.Now().Add(1 * time.Hour)
+	_, err = db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry, _ := db.GetLore(context.Background(), loreID)
+	if !entry.UpdatedAt.After(originalUpdatedAt) {
+		t.Errorf("updated_at was not refreshed: original=%v, new=%v", originalUpdatedAt, entry.UpdatedAt)
+	}
+}
+
+func TestDecayConfidence_ReturnsCount(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create 3 entries
+	for i := 0; i < 3; i++ {
+		entries := []types.NewLoreEntry{
+			{Content: "Entry", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+		}
+		_, err = db.IngestLore(context.Background(), entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Decay all (NULL last_validated_at)
+	threshold := time.Now().Add(1 * time.Hour)
+	affected, err := db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if affected != 3 {
+		t.Errorf("affected = %d, want 3", affected)
+	}
+}
+
+func TestDecayConfidence_EmptyStore(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	threshold := time.Now().Add(-30 * 24 * time.Hour)
+	affected, err := db.DecayConfidence(context.Background(), threshold, 0.01)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if affected != 0 {
+		t.Errorf("affected = %d, want 0 (empty store)", affected)
+	}
+}
