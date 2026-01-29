@@ -193,20 +193,86 @@ func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// feedbackRequest matches the API contract for feedback submission.
+// Uses snake_case JSON tags to match external interface specification.
+type feedbackRequest struct {
+	SourceID string             `json:"source_id"`
+	Feedback []feedbackReqEntry `json:"feedback"`
+}
+
+// feedbackReqEntry represents a single feedback entry in the request.
+// JSON tags use snake_case per API contract.
+type feedbackReqEntry struct {
+	LoreID string `json:"lore_id"`
+	Type   string `json:"type"`
+}
+
 // Feedback handles POST /api/v1/lore/feedback
 func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
-	var req types.FeedbackRequest
+	start := time.Now()
+
+	// Parse JSON body
+	var req feedbackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		WriteProblem(w, r, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %s", err.Error()))
 		return
 	}
 
-	resp := types.FeedbackResponse{
-		Updates: []types.FeedbackUpdate{},
+	// Validate request-level fields
+	reqErrors := validation.ValidateFeedbackRequest(req.SourceID, len(req.Feedback))
+	if len(reqErrors) > 0 {
+		WriteProblemWithErrors(w, r, "Request contains invalid fields", reqErrors)
+		return
 	}
 
-	// TODO: Implement feedback processing
+	// Validate each feedback entry
+	var allErrors []validation.ValidationError
+	for i, entry := range req.Feedback {
+		errs := validation.ValidateFeedbackEntry(i, entry.LoreID, entry.Type)
+		allErrors = append(allErrors, errs...)
+	}
+	if len(allErrors) > 0 {
+		WriteProblemWithErrors(w, r, "Request contains invalid fields", allErrors)
+		return
+	}
+
+	// Convert to store format
+	feedbackEntries := make([]types.FeedbackEntry, len(req.Feedback))
+	for i, entry := range req.Feedback {
+		feedbackEntries[i] = types.FeedbackEntry{
+			LoreID:   entry.LoreID,
+			Type:     entry.Type,
+			SourceID: req.SourceID,
+		}
+	}
+
+	// Call store
+	result, err := h.store.RecordFeedback(r.Context(), feedbackEntries)
+	if err != nil {
+		slog.Error("feedback processing failed", "error", err, "source_id", req.SourceID)
+		MapStoreError(w, r, err)
+		return
+	}
+
+	// Performance logging
+	duration := time.Since(start)
+	if duration > 500*time.Millisecond {
+		slog.Warn("feedback processing exceeded performance target",
+			"component", "api",
+			"action", "feedback",
+			"duration_ms", duration.Milliseconds(),
+			"count", len(req.Feedback),
+		)
+	}
+
+	slog.Info("feedback processed",
+		"component", "api",
+		"action", "feedback",
+		"source_id", req.SourceID,
+		"count", len(result.Updates),
+		"duration_ms", duration.Milliseconds(),
+	)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(result)
 }

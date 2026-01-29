@@ -2767,3 +2767,309 @@ func TestGetDelta_OrderByUpdatedAt(t *testing.T) {
 		t.Errorf("Expected last entry 'Entry C', got %q", result.Lore[2].Content)
 	}
 }
+
+// --- RecordFeedback Tests (Story 5.1) ---
+
+func TestRecordFeedback_Helpful(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create a lore entry
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.72, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the entry ID
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+	originalValidationCount := delta.Lore[0].ValidationCount
+
+	// Record helpful feedback
+	feedback := []types.FeedbackEntry{
+		{LoreID: loreID, Type: "helpful", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Updates) != 1 {
+		t.Fatalf("Expected 1 update, got %d", len(result.Updates))
+	}
+
+	update := result.Updates[0]
+	if update.LoreID != loreID {
+		t.Errorf("LoreID = %q, want %q", update.LoreID, loreID)
+	}
+	if update.PreviousConfidence != 0.72 {
+		t.Errorf("PreviousConfidence = %v, want 0.72", update.PreviousConfidence)
+	}
+	expectedConfidence := 0.80 // 0.72 + 0.08
+	if math.Abs(update.CurrentConfidence-expectedConfidence) > 0.001 {
+		t.Errorf("CurrentConfidence = %v, want %v", update.CurrentConfidence, expectedConfidence)
+	}
+	if update.ValidationCount == nil {
+		t.Error("ValidationCount should be set for helpful feedback")
+	} else if *update.ValidationCount != originalValidationCount+1 {
+		t.Errorf("ValidationCount = %d, want %d", *update.ValidationCount, originalValidationCount+1)
+	}
+
+	// Verify database state
+	entry, _ := db.GetLore(context.Background(), loreID)
+	if math.Abs(entry.Confidence-expectedConfidence) > 0.001 {
+		t.Errorf("DB Confidence = %v, want %v", entry.Confidence, expectedConfidence)
+	}
+	if entry.ValidationCount != originalValidationCount+1 {
+		t.Errorf("DB ValidationCount = %d, want %d", entry.ValidationCount, originalValidationCount+1)
+	}
+	if entry.LastValidatedAt == nil {
+		t.Error("LastValidatedAt should be set for helpful feedback")
+	}
+}
+
+func TestRecordFeedback_Incorrect(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create a lore entry
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.65, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+	originalValidationCount := delta.Lore[0].ValidationCount
+
+	feedback := []types.FeedbackEntry{
+		{LoreID: loreID, Type: "incorrect", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update := result.Updates[0]
+	if update.PreviousConfidence != 0.65 {
+		t.Errorf("PreviousConfidence = %v, want 0.65", update.PreviousConfidence)
+	}
+	expectedConfidence := 0.50 // 0.65 - 0.15
+	if math.Abs(update.CurrentConfidence-expectedConfidence) > 0.001 {
+		t.Errorf("CurrentConfidence = %v, want %v", update.CurrentConfidence, expectedConfidence)
+	}
+	if update.ValidationCount != nil {
+		t.Errorf("ValidationCount should be nil for incorrect feedback, got %d", *update.ValidationCount)
+	}
+
+	// Verify database state
+	entry, _ := db.GetLore(context.Background(), loreID)
+	if entry.ValidationCount != originalValidationCount {
+		t.Errorf("ValidationCount should be unchanged, got %d, want %d", entry.ValidationCount, originalValidationCount)
+	}
+}
+
+func TestRecordFeedback_NotRelevant(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.55, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	feedback := []types.FeedbackEntry{
+		{LoreID: loreID, Type: "not_relevant", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update := result.Updates[0]
+	if update.PreviousConfidence != 0.55 {
+		t.Errorf("PreviousConfidence = %v, want 0.55", update.PreviousConfidence)
+	}
+	if update.CurrentConfidence != 0.55 {
+		t.Errorf("CurrentConfidence = %v, want 0.55 (unchanged)", update.CurrentConfidence)
+	}
+	if update.ValidationCount != nil {
+		t.Errorf("ValidationCount should be nil for not_relevant feedback")
+	}
+}
+
+func TestRecordFeedback_CapAt1(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.95, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	feedback := []types.FeedbackEntry{
+		{LoreID: loreID, Type: "helpful", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update := result.Updates[0]
+	// 0.95 + 0.08 = 1.03, but should cap at 1.0
+	if update.CurrentConfidence != 1.0 {
+		t.Errorf("CurrentConfidence = %v, want 1.0 (capped)", update.CurrentConfidence)
+	}
+}
+
+func TestRecordFeedback_FloorAt0(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.10, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	feedback := []types.FeedbackEntry{
+		{LoreID: loreID, Type: "incorrect", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update := result.Updates[0]
+	// 0.10 - 0.15 = -0.05, but should floor at 0.0
+	if update.CurrentConfidence != 0.0 {
+		t.Errorf("CurrentConfidence = %v, want 0.0 (floored)", update.CurrentConfidence)
+	}
+}
+
+func TestRecordFeedback_NotFound(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	feedback := []types.FeedbackEntry{
+		{LoreID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: "helpful", SourceID: "client-1"},
+	}
+	_, err = db.RecordFeedback(context.Background(), feedback)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestRecordFeedback_Transaction(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create one entry
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+	originalConfidence := delta.Lore[0].Confidence
+
+	// Batch with one valid and one non-existent ID
+	feedback := []types.FeedbackEntry{
+		{LoreID: loreID, Type: "helpful", SourceID: "client-1"},
+		{LoreID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: "helpful", SourceID: "client-1"}, // non-existent
+	}
+	_, err = db.RecordFeedback(context.Background(), feedback)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound, got %v", err)
+	}
+
+	// Verify first entry was NOT updated (transaction rollback)
+	entry, _ := db.GetLore(context.Background(), loreID)
+	if entry.Confidence != originalConfidence {
+		t.Errorf("Confidence changed to %v despite transaction rollback, want %v", entry.Confidence, originalConfidence)
+	}
+}
+
+func TestRecordFeedback_SoftDeleted(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create an entry
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Soft delete the entry
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = db.db.Exec("UPDATE lore_entries SET deleted_at = ? WHERE id = ?", now, loreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to record feedback
+	feedback := []types.FeedbackEntry{
+		{LoreID: loreID, Type: "helpful", SourceID: "client-1"},
+	}
+	_, err = db.RecordFeedback(context.Background(), feedback)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound for soft-deleted entry, got %v", err)
+	}
+}

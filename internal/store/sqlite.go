@@ -32,6 +32,14 @@ const (
 	MaxConfidence    = 1.0
 )
 
+// Feedback confidence adjustment constants (FR19, FR21)
+const (
+	FeedbackHelpfulBoost     = 0.08 // FR19: helpful → +0.08
+	FeedbackIncorrectPenalty = 0.15 // FR19: incorrect → -0.15
+	FeedbackNotRelevantDelta = 0.0  // FR19: not_relevant → 0
+	MinConfidence            = 0.0  // FR21: floor
+)
+
 // appendContext appends new context to existing, respecting the MaxContextLength limit.
 // Truncation applies to the new context only, preserving existing content.
 func appendContext(existing, new string) string {
@@ -851,9 +859,103 @@ func (s *SQLiteStore) GetSnapshotPath(ctx context.Context) (string, error) {
 }
 
 // RecordFeedback records feedback entries and adjusts confidence.
-// TODO: Implement in Story 5.1 (Feedback Processing Endpoint)
+// Uses a transaction for atomic batch processing (fail-fast on missing lore).
 func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.FeedbackEntry) (*types.FeedbackResult, error) {
-	return nil, ErrNotImplemented
+	if len(feedback) == 0 {
+		return &types.FeedbackResult{Updates: []types.FeedbackResultUpdate{}}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+	updates := make([]types.FeedbackResultUpdate, 0, len(feedback))
+
+	for _, entry := range feedback {
+		// Fetch current lore entry
+		var id string
+		var currentConfidence float64
+		var validationCount int
+
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, confidence, validation_count
+			FROM lore_entries
+			WHERE id = ? AND deleted_at IS NULL
+		`, entry.LoreID).Scan(&id, &currentConfidence, &validationCount)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, ErrNotFound
+			}
+			return nil, fmt.Errorf("fetch lore entry: %w", err)
+		}
+
+		// Calculate new confidence based on feedback type
+		previousConfidence := currentConfidence
+		var delta float64
+		switch entry.Type {
+		case "helpful":
+			delta = FeedbackHelpfulBoost
+		case "incorrect":
+			delta = -FeedbackIncorrectPenalty
+		case "not_relevant":
+			delta = FeedbackNotRelevantDelta
+		}
+
+		newConfidence := currentConfidence + delta
+		// Apply cap/floor
+		if newConfidence > MaxConfidence {
+			newConfidence = MaxConfidence
+		}
+		if newConfidence < MinConfidence {
+			newConfidence = MinConfidence
+		}
+
+		// Build result update
+		update := types.FeedbackResultUpdate{
+			LoreID:             entry.LoreID,
+			PreviousConfidence: previousConfidence,
+			CurrentConfidence:  newConfidence,
+		}
+
+		// Update database based on feedback type
+		if entry.Type == "helpful" {
+			newValidationCount := validationCount + 1
+			update.ValidationCount = &newValidationCount
+
+			_, err = tx.ExecContext(ctx, `
+				UPDATE lore_entries
+				SET confidence = ?,
+				    validation_count = validation_count + 1,
+				    last_validated_at = ?,
+				    updated_at = ?
+				WHERE id = ? AND deleted_at IS NULL
+			`, newConfidence, nowStr, nowStr, entry.LoreID)
+		} else {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE lore_entries
+				SET confidence = ?,
+				    updated_at = ?
+				WHERE id = ? AND deleted_at IS NULL
+			`, newConfidence, nowStr, entry.LoreID)
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("update lore entry: %w", err)
+		}
+
+		updates = append(updates, update)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return &types.FeedbackResult{Updates: updates}, nil
 }
 
 // DecayConfidence reduces confidence for entries not validated since threshold.

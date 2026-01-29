@@ -28,6 +28,8 @@ type mockStore struct {
 	snapshotErr    error
 	deltaResult    *types.DeltaResult
 	deltaErr       error
+	feedbackResult *types.FeedbackResult
+	feedbackErr    error
 }
 
 func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
@@ -72,7 +74,13 @@ func (m *mockStore) GetSnapshotPath(ctx context.Context) (string, error) {
 }
 
 func (m *mockStore) RecordFeedback(ctx context.Context, feedback []types.FeedbackEntry) (*types.FeedbackResult, error) {
-	return nil, nil
+	if m.feedbackErr != nil {
+		return nil, m.feedbackErr
+	}
+	if m.feedbackResult != nil {
+		return m.feedbackResult, nil
+	}
+	return &types.FeedbackResult{Updates: []types.FeedbackResultUpdate{}}, nil
 }
 
 func (m *mockStore) DecayConfidence(ctx context.Context, threshold time.Time, amount float64) (int64, error) {
@@ -1316,5 +1324,343 @@ func TestDeltaEndpoint_RoundTrip(t *testing.T) {
 	}
 	if result.AsOf.IsZero() {
 		t.Error("as_of should be set")
+	}
+}
+
+// --- Feedback Endpoint Tests (Story 5.1) ---
+
+func TestFeedback_Success_Helpful(t *testing.T) {
+	validationCount := 3
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		feedbackResult: &types.FeedbackResult{
+			Updates: []types.FeedbackResultUpdate{
+				{
+					LoreID:             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+					PreviousConfidence: 0.72,
+					CurrentConfidence:  0.80,
+					ValidationCount:    &validationCount,
+				},
+			},
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"feedback": [
+			{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "helpful"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var result types.FeedbackResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(result.Updates) != 1 {
+		t.Fatalf("expected 1 update, got %d", len(result.Updates))
+	}
+	if result.Updates[0].LoreID != "01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Errorf("lore_id = %q, want %q", result.Updates[0].LoreID, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	}
+	if result.Updates[0].ValidationCount == nil {
+		t.Error("validation_count should be present for helpful feedback")
+	}
+}
+
+func TestFeedback_Success_Incorrect(t *testing.T) {
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		feedbackResult: &types.FeedbackResult{
+			Updates: []types.FeedbackResultUpdate{
+				{
+					LoreID:             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+					PreviousConfidence: 0.65,
+					CurrentConfidence:  0.50,
+				},
+			},
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"feedback": [
+			{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "incorrect"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var result types.FeedbackResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if result.Updates[0].ValidationCount != nil {
+		t.Errorf("validation_count should be nil for incorrect feedback, got %d", *result.Updates[0].ValidationCount)
+	}
+}
+
+func TestFeedback_LoreNotFound(t *testing.T) {
+	s := &mockStore{
+		stats:       &types.StoreStats{},
+		feedbackErr: store.ErrNotFound,
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"feedback": [
+			{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "helpful"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+func TestFeedback_InvalidJSON(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{invalid json`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+func TestFeedback_MissingSourceID(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "",
+		"feedback": [
+			{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "helpful"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+
+	var problem ProblemWithErrors
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	hasSourceIDError := false
+	for _, e := range problem.Errors {
+		if e.Field == "source_id" {
+			hasSourceIDError = true
+			break
+		}
+	}
+	if !hasSourceIDError {
+		t.Errorf("expected source_id error, got: %v", problem.Errors)
+	}
+}
+
+func TestFeedback_EmptyFeedback(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"feedback": []
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestFeedback_ExceedsBatchSize(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	// Build a batch with 51 entries
+	var feedbackEntries []string
+	for i := 0; i < 51; i++ {
+		feedbackEntries = append(feedbackEntries, `{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "helpful"}`)
+	}
+	body := `{"source_id": "devcontainer-abc123", "feedback": [` + strings.Join(feedbackEntries, ",") + `]}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestFeedback_InvalidLoreID(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"feedback": [
+			{"lore_id": "invalid", "type": "helpful"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+
+	var problem ProblemWithErrors
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	hasLoreIDError := false
+	for _, e := range problem.Errors {
+		if strings.Contains(e.Field, "lore_id") && strings.Contains(e.Message, "ULID") {
+			hasLoreIDError = true
+			break
+		}
+	}
+	if !hasLoreIDError {
+		t.Errorf("expected lore_id ULID error, got: %v", problem.Errors)
+	}
+}
+
+func TestFeedback_InvalidType(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"feedback": [
+			{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "unknown_type"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+
+	var problem ProblemWithErrors
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	hasTypeError := false
+	for _, e := range problem.Errors {
+		if strings.Contains(e.Field, "type") && strings.Contains(e.Message, "must be one of") {
+			hasTypeError = true
+			break
+		}
+	}
+	if !hasTypeError {
+		t.Errorf("expected type enum error, got: %v", problem.Errors)
+	}
+}
+
+func TestFeedback_ContentType(t *testing.T) {
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		feedbackResult: &types.FeedbackResult{Updates: []types.FeedbackResultUpdate{}},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"feedback": [
+			{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "helpful"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Feedback(w, req)
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q for success response", contentType, "application/json")
 	}
 }

@@ -187,3 +187,40 @@ func ValidateIngestRequest(req types.IngestRequest) []ValidationError {
 	}
 	return c.Errors()
 }
+
+// ValidFeedbackTypes defines the allowed feedback type values.
+var ValidFeedbackTypes = []string{"helpful", "not_relevant", "incorrect"}
+
+// ValidateFeedbackRequest validates request-level fields for feedback submission.
+func ValidateFeedbackRequest(sourceID string, feedbackCount int) []ValidationError {
+	c := &Collector{}
+	c.Add(ValidateRequired("source_id", sourceID))
+	if feedbackCount == 0 {
+		c.Add(&ValidationError{Field: "feedback", Message: "is required and must not be empty"})
+	} else if feedbackCount > MaxBatchSize {
+		c.Add(&ValidationError{Field: "feedback", Message: fmt.Sprintf("exceeds maximum batch size of %d", MaxBatchSize)})
+	}
+	return c.Errors()
+}
+
+// ValidateFeedbackEntry validates a single feedback entry.
+func ValidateFeedbackEntry(index int, loreID, feedbackType string) []ValidationError {
+	c := &Collector{}
+	fieldPrefix := fmt.Sprintf("feedback[%d]", index)
+
+	// lore_id: required, valid ULID
+	if err := ValidateRequired(fieldPrefix+".lore_id", loreID); err != nil {
+		c.Add(err)
+	} else {
+		c.Add(ValidateULID(fieldPrefix+".lore_id", loreID))
+	}
+
+	// type: required, valid enum
+	if err := ValidateRequired(fieldPrefix+".type", feedbackType); err != nil {
+		c.Add(err)
+	} else {
+		c.Add(ValidateEnum(fieldPrefix+".type", feedbackType, ValidFeedbackTypes))
+	}
+
+	return c.Errors()
+}

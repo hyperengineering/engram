@@ -693,3 +693,182 @@ func TestValidateIngestRequest_ExceedsMaxBatch(t *testing.T) {
 		t.Errorf("ValidateIngestRequest(51 entries) should have batch size error, got: %v", errs)
 	}
 }
+
+// --- ValidateFeedbackRequest Tests (Story 5.1) ---
+
+func TestValidateFeedbackRequest_Valid(t *testing.T) {
+	errs := ValidateFeedbackRequest("devcontainer-abc123", 5)
+	if len(errs) != 0 {
+		t.Errorf("ValidateFeedbackRequest(valid) = %v, want no errors", errs)
+	}
+}
+
+func TestValidateFeedbackRequest_MissingSourceID(t *testing.T) {
+	errs := ValidateFeedbackRequest("", 5)
+	hasSourceIDError := false
+	for _, e := range errs {
+		if e.Field == "source_id" && strings.Contains(e.Message, "required") {
+			hasSourceIDError = true
+			break
+		}
+	}
+	if !hasSourceIDError {
+		t.Errorf("ValidateFeedbackRequest(empty source_id) should have source_id error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackRequest_WhitespaceSourceID(t *testing.T) {
+	errs := ValidateFeedbackRequest("   ", 5)
+	hasSourceIDError := false
+	for _, e := range errs {
+		if e.Field == "source_id" && strings.Contains(e.Message, "required") {
+			hasSourceIDError = true
+			break
+		}
+	}
+	if !hasSourceIDError {
+		t.Errorf("ValidateFeedbackRequest(whitespace source_id) should have source_id error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackRequest_EmptyFeedback(t *testing.T) {
+	errs := ValidateFeedbackRequest("devcontainer-abc123", 0)
+	hasFeedbackError := false
+	for _, e := range errs {
+		if e.Field == "feedback" && strings.Contains(e.Message, "empty") {
+			hasFeedbackError = true
+			break
+		}
+	}
+	if !hasFeedbackError {
+		t.Errorf("ValidateFeedbackRequest(0 entries) should have feedback error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackRequest_MaxBatchSize(t *testing.T) {
+	errs := ValidateFeedbackRequest("devcontainer-abc123", 50)
+	if len(errs) != 0 {
+		t.Errorf("ValidateFeedbackRequest(50 entries) = %v, want no errors (at limit)", errs)
+	}
+}
+
+func TestValidateFeedbackRequest_ExceedsBatch(t *testing.T) {
+	errs := ValidateFeedbackRequest("devcontainer-abc123", 51)
+	hasBatchError := false
+	for _, e := range errs {
+		if e.Field == "feedback" && strings.Contains(e.Message, "50") {
+			hasBatchError = true
+			break
+		}
+	}
+	if !hasBatchError {
+		t.Errorf("ValidateFeedbackRequest(51 entries) should have batch size error, got: %v", errs)
+	}
+}
+
+// --- ValidateFeedbackEntry Tests (Story 5.1) ---
+
+func TestValidateFeedbackEntry_ValidTypes(t *testing.T) {
+	validTypes := []string{"helpful", "not_relevant", "incorrect"}
+	validULID := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+	for _, feedbackType := range validTypes {
+		t.Run(feedbackType, func(t *testing.T) {
+			errs := ValidateFeedbackEntry(0, validULID, feedbackType)
+			if len(errs) != 0 {
+				t.Errorf("ValidateFeedbackEntry(%q) = %v, want no errors", feedbackType, errs)
+			}
+		})
+	}
+}
+
+func TestValidateFeedbackEntry_InvalidType(t *testing.T) {
+	errs := ValidateFeedbackEntry(0, "01ARZ3NDEKTSV4RRFFQ69G5FAV", "invalid_type")
+	hasTypeError := false
+	for _, e := range errs {
+		if e.Field == "feedback[0].type" && strings.Contains(e.Message, "must be one of") {
+			hasTypeError = true
+			break
+		}
+	}
+	if !hasTypeError {
+		t.Errorf("ValidateFeedbackEntry(invalid type) should have type error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackEntry_EmptyType(t *testing.T) {
+	errs := ValidateFeedbackEntry(0, "01ARZ3NDEKTSV4RRFFQ69G5FAV", "")
+	hasTypeError := false
+	for _, e := range errs {
+		if e.Field == "feedback[0].type" && strings.Contains(e.Message, "required") {
+			hasTypeError = true
+			break
+		}
+	}
+	if !hasTypeError {
+		t.Errorf("ValidateFeedbackEntry(empty type) should have type error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackEntry_ValidULID(t *testing.T) {
+	errs := ValidateFeedbackEntry(0, "01ARZ3NDEKTSV4RRFFQ69G5FAV", "helpful")
+	if len(errs) != 0 {
+		t.Errorf("ValidateFeedbackEntry(valid ULID) = %v, want no errors", errs)
+	}
+}
+
+func TestValidateFeedbackEntry_InvalidULID_TooShort(t *testing.T) {
+	errs := ValidateFeedbackEntry(0, "01ARZ3NDEK", "helpful")
+	hasULIDError := false
+	for _, e := range errs {
+		if e.Field == "feedback[0].lore_id" && strings.Contains(e.Message, "ULID") {
+			hasULIDError = true
+			break
+		}
+	}
+	if !hasULIDError {
+		t.Errorf("ValidateFeedbackEntry(short ULID) should have ULID error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackEntry_InvalidULID_BadChar(t *testing.T) {
+	errs := ValidateFeedbackEntry(0, "01ARZ3NDEKTSV4RRFFQ69GILOU", "helpful")
+	hasULIDError := false
+	for _, e := range errs {
+		if e.Field == "feedback[0].lore_id" && strings.Contains(e.Message, "ULID") {
+			hasULIDError = true
+			break
+		}
+	}
+	if !hasULIDError {
+		t.Errorf("ValidateFeedbackEntry(bad char ULID) should have ULID error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackEntry_EmptyLoreID(t *testing.T) {
+	errs := ValidateFeedbackEntry(0, "", "helpful")
+	hasLoreIDError := false
+	for _, e := range errs {
+		if e.Field == "feedback[0].lore_id" && strings.Contains(e.Message, "required") {
+			hasLoreIDError = true
+			break
+		}
+	}
+	if !hasLoreIDError {
+		t.Errorf("ValidateFeedbackEntry(empty lore_id) should have lore_id error, got: %v", errs)
+	}
+}
+
+func TestValidateFeedbackEntry_IndexInFieldName(t *testing.T) {
+	errs := ValidateFeedbackEntry(5, "", "helpful")
+	hasIndexedField := false
+	for _, e := range errs {
+		if strings.Contains(e.Field, "feedback[5]") {
+			hasIndexedField = true
+			break
+		}
+	}
+	if !hasIndexedField {
+		t.Errorf("ValidateFeedbackEntry(index 5) should use feedback[5] prefix, got: %v", errs)
+	}
+}

@@ -162,6 +162,7 @@ type FeedbackResultUpdate struct {
 	LoreID             string  `json:"lore_id"`
 	PreviousConfidence float64 `json:"previous_confidence"`
 	CurrentConfidence  float64 `json:"current_confidence"`
+	ValidationCount    *int    `json:"validation_count,omitempty"` // Only set for helpful feedback
 }
 
 // StoreMetadata holds store-level metadata.
