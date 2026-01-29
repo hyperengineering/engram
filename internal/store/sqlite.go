@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -73,7 +74,22 @@ func addSourceID(sources []string, newSourceID string) ([]string, bool) {
 
 // SQLiteStore represents the SQLite-backed lore database.
 type SQLiteStore struct {
-	db *sql.DB
+	db       *sql.DB
+	embedder Embedder
+	cfg      Config
+}
+
+// Embedder is the interface for embedding generation (matches embedding.Embedder).
+type Embedder interface {
+	Embed(ctx context.Context, content string) ([]float32, error)
+	EmbedBatch(ctx context.Context, contents []string) ([][]float32, error)
+	ModelName() string
+}
+
+// Config is the interface for configuration access.
+type Config interface {
+	GetDeduplicationEnabled() bool
+	GetSimilarityThreshold() float64
 }
 
 // NewSQLiteStore creates a new SQLiteStore instance.
@@ -104,6 +120,13 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	}
 
 	return &SQLiteStore{db: db}, nil
+}
+
+// SetDependencies configures the embedder and config for deduplication.
+// This is called after construction to inject dependencies without changing the constructor signature.
+func (s *SQLiteStore) SetDependencies(embedder Embedder, cfg Config) {
+	s.embedder = embedder
+	s.cfg = cfg
 }
 
 // enablePragmas sets SQLite pragmas for optimal performance and safety.
@@ -262,68 +285,96 @@ func scanLoreEntry(scanner interface{ Scan(...any) error }) (*types.LoreEntry, e
 	return &entry, nil
 }
 
-// IngestLore stores new lore entries with pending embedding status.
+// IngestLore stores new lore entries with optional embedding generation and deduplication.
+// If an embedder is configured, embeddings are generated synchronously.
+// If deduplication is enabled and embeddings are available, similar entries are merged.
 func (s *SQLiteStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
 	if len(entries) == 0 {
 		return &types.IngestResult{Accepted: 0, Merged: 0, Rejected: 0, Errors: []string{}}, nil
 	}
 
+	start := time.Now()
+	result := &types.IngestResult{Errors: []string{}}
+
+	// 1. Generate embeddings if embedder is available
+	var embeddings [][]float32
+	var embeddingErr error
+	if s.embedder != nil {
+		contents := make([]string, len(entries))
+		for i, e := range entries {
+			contents[i] = e.Content
+		}
+		embeddings, embeddingErr = s.embedder.EmbedBatch(ctx, contents)
+		if embeddingErr != nil {
+			slog.Warn("embedding generation failed, entries will be stored pending",
+				"error", embeddingErr, "count", len(entries))
+		}
+	}
+
+	// 2. Determine deduplication settings
+	dedupEnabled := s.cfg != nil && s.cfg.GetDeduplicationEnabled()
+	threshold := 0.92
+	if s.cfg != nil {
+		threshold = s.cfg.GetSimilarityThreshold()
+	}
+
+	// 3. Begin transaction
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO lore_entries (
-			id, content, context, category, confidence,
-			embedding, embedding_status, source_id, sources,
-			validation_count, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, NULL, 'pending', ?, ?, 0, ?, ?)
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("prepare statement: %w", err)
-	}
-	defer stmt.Close()
-
-	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339)
-
-	for _, entry := range entries {
-		id := ulid.Make().String()
-		sources := []string{entry.SourceID}
-		sourcesBytes, err := json.Marshal(sources)
-		if err != nil {
-			return nil, fmt.Errorf("marshal sources: %w", err)
+	// 4. Process each entry
+	for i, entry := range entries {
+		var embedding []float32
+		hasEmbedding := embeddingErr == nil && embeddings != nil && i < len(embeddings) && len(embeddings[i]) > 0
+		if hasEmbedding {
+			embedding = embeddings[i]
 		}
-		sourcesJSON := string(sourcesBytes)
 
-		_, err = stmt.ExecContext(ctx,
-			id,
-			entry.Content,
-			entry.Context,
-			entry.Category,
-			entry.Confidence,
-			entry.SourceID,
-			sourcesJSON,
-			nowStr,
-			nowStr,
-		)
-		if err != nil {
+		// 5. Deduplication check (if enabled and embedding available)
+		if dedupEnabled && hasEmbedding {
+			similar, err := s.findSimilarInTx(ctx, tx, embedding, entry.Category, threshold)
+			if err != nil {
+				return nil, fmt.Errorf("find similar: %w", err)
+			}
+
+			if len(similar) > 0 {
+				// Merge with best match (highest similarity)
+				bestMatch := similar[0]
+				if err := s.mergeLoreInTx(ctx, tx, bestMatch.ID, entry); err != nil {
+					return nil, fmt.Errorf("merge lore: %w", err)
+				}
+				result.Merged++
+				continue
+			}
+		}
+
+		// 6. Store as new entry
+		if err := s.insertEntryInTx(ctx, tx, entry, embedding, hasEmbedding); err != nil {
 			return nil, fmt.Errorf("insert entry: %w", err)
 		}
+		result.Accepted++
 	}
 
+	// 7. Commit transaction
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
-	return &types.IngestResult{
-		Accepted: len(entries),
-		Merged:   0,
-		Rejected: 0,
-		Errors:   []string{},
-	}, nil
+	// 8. Performance logging
+	duration := time.Since(start)
+	if duration > 5*time.Second {
+		slog.Warn("ingest batch exceeded performance target",
+			"duration_ms", duration.Milliseconds(),
+			"count", len(entries),
+			"accepted", result.Accepted,
+			"merged", result.Merged,
+		)
+	}
+
+	return result, nil
 }
 
 // GetLore retrieves a lore entry by ID.
@@ -431,7 +482,25 @@ func (s *SQLiteStore) MarkEmbeddingFailed(ctx context.Context, id string) error 
 // FindSimilar finds lore entries similar to the given embedding within the same category.
 // Returns entries with cosine similarity >= threshold, ordered by similarity descending.
 func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.SimilarEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	// Delegate to findSimilarInTx; *sql.DB satisfies queryContext interface
+	return s.findSimilarInTx(ctx, s.db, embedding, category, threshold)
+}
+
+// --- Transaction-aware helper methods for deduplication ---
+
+// queryContext is the interface satisfied by both *sql.DB and *sql.Tx for query operations.
+// This abstraction allows the same query logic to execute both within transactions (for atomic
+// deduplication operations) and outside transactions (for standalone queries), avoiding code
+// duplication while maintaining transactional integrity where needed.
+type queryContext interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// findSimilarInTx finds similar entries within a transaction.
+func (s *SQLiteStore) findSimilarInTx(ctx context.Context, qc queryContext, embedding []float32, category string, threshold float64) ([]types.SimilarEntry, error) {
+	rows, err := qc.QueryContext(ctx, `
 		SELECT id, content, context, category, confidence, embedding, embedding_status,
 		       source_id, sources, validation_count, created_at, updated_at, deleted_at, last_validated_at
 		FROM lore_entries
@@ -449,10 +518,7 @@ func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, cate
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
-		// Calculate cosine similarity
 		similarity := cosineSimilarity(embedding, entry.Embedding)
-
-		// Filter by threshold
 		if similarity >= threshold {
 			results = append(results, types.SimilarEntry{
 				LoreEntry:  *entry,
@@ -465,17 +531,107 @@ func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, cate
 		return nil, fmt.Errorf("iterate rows: %w", err)
 	}
 
-	// Sort by similarity descending
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Similarity > results[j].Similarity
 	})
 
-	// Return empty slice (not nil) when no matches
 	if results == nil {
 		results = []types.SimilarEntry{}
 	}
 
 	return results, nil
+}
+
+// getLoreInTx retrieves a lore entry by ID within a transaction.
+func (s *SQLiteStore) getLoreInTx(ctx context.Context, qc queryContext, id string) (*types.LoreEntry, error) {
+	row := qc.QueryRowContext(ctx, `
+		SELECT id, content, context, category, confidence, embedding, embedding_status,
+		       source_id, sources, validation_count, created_at, updated_at, deleted_at, last_validated_at
+		FROM lore_entries
+		WHERE id = ? AND deleted_at IS NULL
+	`, id)
+
+	entry, err := scanLoreEntry(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scan row: %w", err)
+	}
+
+	return entry, nil
+}
+
+// mergeLoreInTx merges a source entry into target within a transaction.
+func (s *SQLiteStore) mergeLoreInTx(ctx context.Context, qc queryContext, targetID string, source types.NewLoreEntry) error {
+	target, err := s.getLoreInTx(ctx, qc, targetID)
+	if err != nil {
+		return err
+	}
+
+	newConfidence := math.Min(target.Confidence+ConfidenceBoost, MaxConfidence)
+	newContext := appendContext(target.Context, source.Context)
+	newSources, _ := addSourceID(target.Sources, source.SourceID)
+	sourcesJSON, err := json.Marshal(newSources)
+	if err != nil {
+		return fmt.Errorf("marshal sources: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = qc.ExecContext(ctx, `
+		UPDATE lore_entries
+		SET confidence = ?, context = ?, sources = ?, updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, newConfidence, newContext, string(sourcesJSON), now, targetID)
+	if err != nil {
+		return fmt.Errorf("update lore entry: %w", err)
+	}
+
+	return nil
+}
+
+// insertEntryInTx inserts a new entry within a transaction.
+func (s *SQLiteStore) insertEntryInTx(ctx context.Context, qc queryContext, entry types.NewLoreEntry, embedding []float32, hasEmbedding bool) error {
+	id := ulid.Make().String()
+	sources := []string{entry.SourceID}
+	sourcesBytes, err := json.Marshal(sources)
+	if err != nil {
+		return fmt.Errorf("marshal sources: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	embeddingStatus := "pending"
+	var embeddingBlob []byte
+	if hasEmbedding {
+		embeddingStatus = "complete"
+		embeddingBlob = packEmbedding(embedding)
+	}
+
+	_, err = qc.ExecContext(ctx, `
+		INSERT INTO lore_entries (
+			id, content, context, category, confidence,
+			embedding, embedding_status, source_id, sources,
+			validation_count, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+	`,
+		id,
+		entry.Content,
+		entry.Context,
+		entry.Category,
+		entry.Confidence,
+		embeddingBlob,
+		embeddingStatus,
+		entry.SourceID,
+		string(sourcesBytes),
+		now,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("insert entry: %w", err)
+	}
+
+	return nil
 }
 
 // --- Stub implementations for remaining Store interface methods ---

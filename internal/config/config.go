@@ -63,7 +63,18 @@ type LogConfig struct {
 
 // DeduplicationConfig contains semantic deduplication settings.
 type DeduplicationConfig struct {
+	Enabled             bool    `yaml:"enabled"`
 	SimilarityThreshold float64 `yaml:"similarity_threshold"`
+}
+
+// GetDeduplicationEnabled returns whether deduplication is enabled.
+func (c *Config) GetDeduplicationEnabled() bool {
+	return c.Deduplication.Enabled
+}
+
+// GetSimilarityThreshold returns the similarity threshold for deduplication.
+func (c *Config) GetSimilarityThreshold() float64 {
+	return c.Deduplication.SimilarityThreshold
 }
 
 // Duration is a wrapper around time.Duration that supports YAML string parsing.
@@ -165,6 +176,7 @@ func newDefaults() *Config {
 			Format: "json",
 		},
 		Deduplication: DeduplicationConfig{
+			Enabled:             true,
 			SimilarityThreshold: 0.92,
 		},
 	}
@@ -263,6 +275,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 
 	// Deduplication
+	if v := os.Getenv("ENGRAM_DEDUPLICATION_ENABLED"); v != "" {
+		cfg.Deduplication.Enabled = v == "true" || v == "1"
+	}
 	if v := os.Getenv("ENGRAM_SIMILARITY_THRESHOLD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Deduplication.SimilarityThreshold = f

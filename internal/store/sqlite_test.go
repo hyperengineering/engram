@@ -1691,3 +1691,422 @@ func TestMergeLore_ReturnsErrNotFoundForDeletedTarget(t *testing.T) {
 		t.Errorf("Expected ErrNotFound for deleted target, got %v", err)
 	}
 }
+
+// --- Deduplication Integration Tests (Story 3.3) ---
+
+// mockEmbedder implements the Embedder interface for testing.
+type mockEmbedder struct {
+	embeddings map[string][]float32
+	err        error
+}
+
+func (m *mockEmbedder) Embed(ctx context.Context, content string) ([]float32, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if emb, ok := m.embeddings[content]; ok {
+		return emb, nil
+	}
+	return makeTestEmbedding(len(content)), nil
+}
+
+func (m *mockEmbedder) EmbedBatch(ctx context.Context, contents []string) ([][]float32, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	result := make([][]float32, len(contents))
+	for i, content := range contents {
+		if emb, ok := m.embeddings[content]; ok {
+			result[i] = emb
+		} else {
+			result[i] = makeTestEmbedding(len(content))
+		}
+	}
+	return result, nil
+}
+
+func (m *mockEmbedder) ModelName() string {
+	return "mock-embedder"
+}
+
+// mockConfig implements the Config interface for testing.
+type mockConfig struct {
+	dedupEnabled bool
+	threshold    float64
+}
+
+func (m *mockConfig) GetDeduplicationEnabled() bool {
+	return m.dedupEnabled
+}
+
+func (m *mockConfig) GetSimilarityThreshold() float64 {
+	return m.threshold
+}
+
+// setupDeduplicationTest creates a store with embedder and config for deduplication testing.
+func setupDeduplicationTest(t *testing.T, dedupEnabled bool, threshold float64, embeddings map[string][]float32) *SQLiteStore {
+	t.Helper()
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	embedder := &mockEmbedder{embeddings: embeddings}
+	cfg := &mockConfig{dedupEnabled: dedupEnabled, threshold: threshold}
+	db.SetDependencies(embedder, cfg)
+
+	return db
+}
+
+func TestIngestLore_WithDeduplication_FindsAndMergesDuplicate(t *testing.T) {
+	// Create embeddings that will be identical (similarity = 1.0)
+	baseEmbedding := makeTestEmbedding(0)
+	embeddings := map[string][]float32{
+		"First content":  baseEmbedding,
+		"Second content": baseEmbedding, // Same embedding = duplicate
+	}
+
+	db := setupDeduplicationTest(t, true, 0.92, embeddings)
+	defer db.Close()
+
+	// First ingest: store the first entry
+	first := []types.NewLoreEntry{{
+		Content:    "First content",
+		Context:    "First context",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-1",
+	}}
+
+	result1, err := db.IngestLore(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result1.Accepted != 1 {
+		t.Errorf("First ingest: expected accepted=1, got %d", result1.Accepted)
+	}
+
+	// Second ingest: should detect duplicate and merge
+	second := []types.NewLoreEntry{{
+		Content:    "Second content",
+		Context:    "Second context",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.7,
+		SourceID:   "source-2",
+	}}
+
+	result2, err := db.IngestLore(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result2.Merged != 1 {
+		t.Errorf("Second ingest: expected merged=1, got %d", result2.Merged)
+	}
+	if result2.Accepted != 0 {
+		t.Errorf("Second ingest: expected accepted=0, got %d", result2.Accepted)
+	}
+
+	// Verify only one entry exists
+	var count int
+	err = db.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 entry in store, got %d", count)
+	}
+
+	// Verify the entry was merged (confidence boosted, contexts combined)
+	var confidence float64
+	var ctx string
+	err = db.db.QueryRow("SELECT confidence, context FROM lore_entries WHERE deleted_at IS NULL").Scan(&confidence, &ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confidence != 0.9 { // 0.8 + 0.10
+		t.Errorf("Expected confidence 0.9 after merge, got %v", confidence)
+	}
+	if !strings.Contains(ctx, "First context") || !strings.Contains(ctx, "Second context") {
+		t.Errorf("Expected merged contexts, got %q", ctx)
+	}
+}
+
+func TestIngestLore_WithDeduplication_DifferentCategoriesNotMerged(t *testing.T) {
+	baseEmbedding := makeTestEmbedding(0)
+	embeddings := map[string][]float32{
+		"First content":  baseEmbedding,
+		"Second content": baseEmbedding,
+	}
+
+	db := setupDeduplicationTest(t, true, 0.92, embeddings)
+	defer db.Close()
+
+	// First entry in PATTERN_OUTCOME
+	first := []types.NewLoreEntry{{
+		Content:    "First content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-1",
+	}}
+	_, err := db.IngestLore(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second entry in DEPENDENCY_BEHAVIOR (different category)
+	second := []types.NewLoreEntry{{
+		Content:    "Second content",
+		Category:   "DEPENDENCY_BEHAVIOR",
+		Confidence: 0.8,
+		SourceID:   "source-2",
+	}}
+	result, err := db.IngestLore(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be accepted, not merged (different categories)
+	if result.Accepted != 1 {
+		t.Errorf("Expected accepted=1, got %d", result.Accepted)
+	}
+	if result.Merged != 0 {
+		t.Errorf("Expected merged=0, got %d", result.Merged)
+	}
+
+	// Verify two entries exist
+	var count int
+	err = db.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("Expected 2 entries (different categories), got %d", count)
+	}
+}
+
+func TestIngestLore_WithDeduplication_BelowThresholdNotMerged(t *testing.T) {
+	// Create orthogonal embeddings (similarity = 0)
+	embeddings := map[string][]float32{
+		"First content":  makeTestEmbedding(0),
+		"Second content": makeTestEmbedding(1), // Different dimension = orthogonal
+	}
+
+	db := setupDeduplicationTest(t, true, 0.92, embeddings)
+	defer db.Close()
+
+	first := []types.NewLoreEntry{{
+		Content:    "First content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-1",
+	}}
+	_, err := db.IngestLore(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := []types.NewLoreEntry{{
+		Content:    "Second content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-2",
+	}}
+	result, err := db.IngestLore(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be accepted (below threshold)
+	if result.Accepted != 1 {
+		t.Errorf("Expected accepted=1, got %d", result.Accepted)
+	}
+	if result.Merged != 0 {
+		t.Errorf("Expected merged=0, got %d", result.Merged)
+	}
+}
+
+func TestIngestLore_DeduplicationDisabled_StoresAll(t *testing.T) {
+	baseEmbedding := makeTestEmbedding(0)
+	embeddings := map[string][]float32{
+		"First content":  baseEmbedding,
+		"Second content": baseEmbedding,
+	}
+
+	// Deduplication DISABLED
+	db := setupDeduplicationTest(t, false, 0.92, embeddings)
+	defer db.Close()
+
+	first := []types.NewLoreEntry{{
+		Content:    "First content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-1",
+	}}
+	_, err := db.IngestLore(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := []types.NewLoreEntry{{
+		Content:    "Second content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-2",
+	}}
+	result, err := db.IngestLore(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be accepted (deduplication disabled)
+	if result.Accepted != 1 {
+		t.Errorf("Expected accepted=1, got %d", result.Accepted)
+	}
+	if result.Merged != 0 {
+		t.Errorf("Expected merged=0 (dedup disabled), got %d", result.Merged)
+	}
+
+	// Verify two entries exist
+	var count int
+	err = db.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("Expected 2 entries (dedup disabled), got %d", count)
+	}
+}
+
+func TestIngestLore_EmbeddingFailure_StoresAsPending(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Set up embedder that returns an error
+	embedder := &mockEmbedder{err: errors.New("API error")}
+	cfg := &mockConfig{dedupEnabled: true, threshold: 0.92}
+	db.SetDependencies(embedder, cfg)
+
+	entries := []types.NewLoreEntry{{
+		Content:    "Test content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-1",
+	}}
+
+	result, err := db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be accepted (stored as pending)
+	if result.Accepted != 1 {
+		t.Errorf("Expected accepted=1, got %d", result.Accepted)
+	}
+
+	// Verify entry has pending embedding status
+	var status string
+	err = db.db.QueryRow("SELECT embedding_status FROM lore_entries WHERE deleted_at IS NULL").Scan(&status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Errorf("Expected embedding_status='pending', got %q", status)
+	}
+}
+
+func TestIngestLore_MergedCountAccurate(t *testing.T) {
+	baseEmbedding := makeTestEmbedding(0)
+	embeddings := map[string][]float32{
+		"Content A": baseEmbedding,
+		"Content B": baseEmbedding,     // Duplicate of A
+		"Content C": makeTestEmbedding(1), // Different
+		"Content D": baseEmbedding,     // Duplicate of A
+		"Content E": makeTestEmbedding(2), // Different
+	}
+
+	db := setupDeduplicationTest(t, true, 0.92, embeddings)
+	defer db.Close()
+
+	// First: store entry A
+	first := []types.NewLoreEntry{{
+		Content:    "Content A",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-1",
+	}}
+	_, err := db.IngestLore(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Batch: B (merge), C (accept), D (merge), E (accept)
+	batch := []types.NewLoreEntry{
+		{Content: "Content B", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "source-2"},
+		{Content: "Content C", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "source-3"},
+		{Content: "Content D", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "source-4"},
+		{Content: "Content E", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "source-5"},
+	}
+
+	result, err := db.IngestLore(context.Background(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Expect: 2 merged (B, D), 2 accepted (C, E)
+	if result.Merged != 2 {
+		t.Errorf("Expected merged=2, got %d", result.Merged)
+	}
+	if result.Accepted != 2 {
+		t.Errorf("Expected accepted=2, got %d", result.Accepted)
+	}
+
+	// Verify 3 entries total (A, C, E)
+	var count int
+	err = db.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Errorf("Expected 3 entries, got %d", count)
+	}
+}
+
+func TestIngestLore_NoEmbedder_StoresAllAsPending(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// No SetDependencies called - embedder and config are nil
+
+	entries := []types.NewLoreEntry{
+		{Content: "Content A", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "source-1"},
+		{Content: "Content B", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "source-2"},
+	}
+
+	result, err := db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Accepted != 2 {
+		t.Errorf("Expected accepted=2, got %d", result.Accepted)
+	}
+	if result.Merged != 0 {
+		t.Errorf("Expected merged=0 (no embedder), got %d", result.Merged)
+	}
+
+	// Verify all have pending status
+	var count int
+	err = db.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE embedding_status = 'pending'").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("Expected 2 entries with pending status, got %d", count)
+	}
+}

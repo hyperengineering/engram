@@ -30,6 +30,7 @@ func clearEnv(t *testing.T) {
 		"ENGRAM_LOG_FORMAT",
 		"ENGRAM_CONFIG_PATH",
 		"ENGRAM_DEV_MODE",
+		"ENGRAM_DEDUPLICATION_ENABLED",
 		"ENGRAM_SIMILARITY_THRESHOLD",
 		"ENGRAM_ADDRESS", // legacy
 	}
@@ -116,6 +117,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 
 	// Deduplication defaults
+	if !cfg.Deduplication.Enabled {
+		t.Error("Deduplication.Enabled should default to true")
+	}
 	if cfg.Deduplication.SimilarityThreshold != 0.92 {
 		t.Errorf("Deduplication.SimilarityThreshold = %v, want 0.92", cfg.Deduplication.SimilarityThreshold)
 	}
@@ -598,5 +602,77 @@ deduplication:
 
 	if cfg.Deduplication.SimilarityThreshold != 0.95 {
 		t.Errorf("Deduplication.SimilarityThreshold = %v, want 0.95 (env override)", cfg.Deduplication.SimilarityThreshold)
+	}
+}
+
+// Test: Deduplication.Enabled default value
+func TestConfig_DeduplicationEnabled_Default(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if !cfg.Deduplication.Enabled {
+		t.Error("Deduplication.Enabled should default to true")
+	}
+}
+
+// Test: ENGRAM_DEDUPLICATION_ENABLED=false disables deduplication
+func TestConfig_DeduplicationEnabled_EnvDisables(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+	os.Setenv("ENGRAM_DEDUPLICATION_ENABLED", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Deduplication.Enabled {
+		t.Error("Deduplication.Enabled should be false when env var is 'false'")
+	}
+}
+
+// Test: ENGRAM_DEDUPLICATION_ENABLED=1 enables deduplication
+func TestConfig_DeduplicationEnabled_EnvEnables(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+	os.Setenv("ENGRAM_DEDUPLICATION_ENABLED", "1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if !cfg.Deduplication.Enabled {
+		t.Error("Deduplication.Enabled should be true when env var is '1'")
+	}
+}
+
+// Test: Deduplication.Enabled from YAML
+func TestConfig_DeduplicationEnabled_FromYAML(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	yamlContent := `
+deduplication:
+  enabled: false
+`
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := LoadFromFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.Deduplication.Enabled {
+		t.Error("Deduplication.Enabled should be false from YAML")
 	}
 }

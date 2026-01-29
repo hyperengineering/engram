@@ -107,6 +107,12 @@ log:
 # Deduplication Configuration
 # ---------------------------
 deduplication:
+  # Enable semantic deduplication during ingest.
+  # When enabled, similar entries are merged instead of duplicated.
+  # Default: true
+  # Env: ENGRAM_DEDUPLICATION_ENABLED
+  enabled: true
+
   # Cosine similarity threshold for semantic deduplication.
   # Entries with similarity >= threshold are considered duplicates.
   # Higher values = stricter matching (fewer duplicates detected).
@@ -150,4 +156,5 @@ deduplication:
 #   ENGRAM_LOG_FORMAT           - Log format (default: json)
 #
 # Deduplication:
-#   ENGRAM_SIMILARITY_THRESHOLD - Cosine similarity threshold (default: 0.92)
+#   ENGRAM_DEDUPLICATION_ENABLED - Enable semantic deduplication (default: true)
+#   ENGRAM_SIMILARITY_THRESHOLD  - Cosine similarity threshold (default: 0.92)

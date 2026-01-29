@@ -59,12 +59,18 @@ func run(cmd *cobra.Command, args []string) error {
 	embedder := embedding.NewOpenAI(cfg.Embedding.APIKey, cfg.Embedding.Model)
 	slog.Info("embedder initialized", "model", cfg.Embedding.Model)
 
-	// 6. Initialize HTTP router
+	// 6. Configure store dependencies for deduplication
+	db.SetDependencies(embedder, cfg)
+	slog.Info("deduplication configured",
+		"enabled", cfg.Deduplication.Enabled,
+		"threshold", cfg.Deduplication.SimilarityThreshold)
+
+	// 7. Initialize HTTP router
 	handler := api.NewHandler(db, embedder, cfg.Auth.APIKey, Version)
 	router := api.NewRouter(handler)
 	slog.Info("router initialized")
 
-	// 7. Configure HTTP server
+	// 8. Configure HTTP server
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         addr,
@@ -73,7 +79,7 @@ func run(cmd *cobra.Command, args []string) error {
 		WriteTimeout: time.Duration(cfg.Server.WriteTimeout),
 	}
 
-	// 8. Worker lifecycle infrastructure
+	// 9. Worker lifecycle infrastructure
 	var wg sync.WaitGroup
 
 	// Initialize and start embedding retry worker
@@ -90,7 +96,7 @@ func run(cmd *cobra.Command, args []string) error {
 	// startWorker(ctx, &wg, "snapshot", snapshotWorker.Run)
 	// startWorker(ctx, &wg, "decay", decayWorker.Run)
 
-	// 9. Start HTTP server in goroutine
+	// 10. Start HTTP server in goroutine
 	go func() {
 		slog.Info("server starting", "address", addr)
 		// ErrServerClosed is the expected error when Shutdown() is called gracefully.
@@ -101,25 +107,25 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// 10. Block until signal received
+	// 11. Block until signal received
 	<-ctx.Done()
 	slog.Info("shutdown initiated")
 
-	// 11. Graceful shutdown sequence
+	// 12. Graceful shutdown sequence
 	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
 		time.Duration(cfg.Server.ShutdownTimeout))
 	defer shutdownCancel()
 
-	// 11a. Stop HTTP server (drains in-flight requests)
+	// 12a. Stop HTTP server (drains in-flight requests)
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown error", "error", err)
 	}
 
-	// 11b. Wait for workers to complete
+	// 12b. Wait for workers to complete
 	wg.Wait()
 
-	// 11c. Close store
+	// 12c. Close store
 	if err := db.Close(); err != nil {
 		slog.Error("store close error", "error", err)
 	}
