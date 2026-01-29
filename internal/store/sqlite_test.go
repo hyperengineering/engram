@@ -2396,3 +2396,129 @@ func TestGetSnapshotPath_ErrorWhenNoSnapshot(t *testing.T) {
 		t.Errorf("Expected ErrSnapshotNotAvailable, got %v", err)
 	}
 }
+
+// --- GetSnapshot Tests (Story 4.2) ---
+
+func TestGetSnapshot_ReturnsReader(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Generate a snapshot first
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := db.GetSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("GetSnapshot() error = %v", err)
+	}
+	if reader == nil {
+		t.Fatal("GetSnapshot() returned nil reader")
+	}
+	defer reader.Close()
+}
+
+func TestGetSnapshot_ReaderContainsData(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert some data
+	entries := []types.NewLoreEntry{
+		{Content: "Test entry", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate snapshot
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := db.GetSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	// Read first 16 bytes - SQLite header starts with "SQLite format 3\x00"
+	header := make([]byte, 16)
+	n, err := reader.Read(header)
+	if err != nil {
+		t.Fatalf("Failed to read from snapshot: %v", err)
+	}
+	if n < 16 {
+		t.Fatalf("Expected at least 16 bytes, got %d", n)
+	}
+
+	// Check SQLite magic bytes
+	expectedMagic := "SQLite format 3\x00"
+	if string(header) != expectedMagic {
+		t.Errorf("Expected SQLite header %q, got %q", expectedMagic, string(header))
+	}
+}
+
+func TestGetSnapshot_ErrorWhenNoSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Don't generate a snapshot
+	reader, err := db.GetSnapshot(context.Background())
+	if !errors.Is(err, ErrSnapshotNotAvailable) {
+		t.Errorf("Expected ErrSnapshotNotAvailable, got %v", err)
+	}
+	if reader != nil {
+		reader.Close()
+		t.Error("Expected nil reader when snapshot not available")
+	}
+}
+
+func TestGetSnapshot_ReaderCloseable(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Generate snapshot
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := db.GetSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Close should not error
+	err = reader.Close()
+	if err != nil {
+		t.Errorf("reader.Close() error = %v", err)
+	}
+
+	// Double close should be safe (or at least not panic)
+	// This is a defensive test - os.File returns error on double close
+	// but we don't want to panic
+	_ = reader.Close()
+}

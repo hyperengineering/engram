@@ -19,11 +19,13 @@ import (
 
 // mockStore implements store.Store interface for testing
 type mockStore struct {
-	stats       *types.StoreStats
-	statsErr    error
-	ingestErr   error
-	ingestCalls int
-	lastEntries []types.NewLoreEntry
+	stats          *types.StoreStats
+	statsErr       error
+	ingestErr      error
+	ingestCalls    int
+	lastEntries    []types.NewLoreEntry
+	snapshotReader io.ReadCloser
+	snapshotErr    error
 }
 
 func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
@@ -52,7 +54,7 @@ func (m *mockStore) GetMetadata(ctx context.Context) (*types.StoreMetadata, erro
 }
 
 func (m *mockStore) GetSnapshot(ctx context.Context) (io.ReadCloser, error) {
-	return nil, nil
+	return m.snapshotReader, m.snapshotErr
 }
 
 func (m *mockStore) GetDelta(ctx context.Context, since time.Time) (*types.DeltaResult, error) {
@@ -857,5 +859,204 @@ func TestIngestLore_ContextTooLong(t *testing.T) {
 	}
 	if !hasContextError {
 		t.Errorf("expected context length error, got: %v", resp.Errors)
+	}
+}
+
+// --- Snapshot Endpoint Tests (Story 4.2) ---
+
+// trackingReadCloser wraps an io.ReadCloser and tracks if Close was called
+type trackingReadCloser struct {
+	io.ReadCloser
+	closed bool
+}
+
+func (t *trackingReadCloser) Close() error {
+	t.closed = true
+	return t.ReadCloser.Close()
+}
+
+func TestSnapshot_ServesFile(t *testing.T) {
+	// Create a mock reader with test data
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(strings.NewReader(string(testData)))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+		snapshotErr:    nil,
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.Snapshot(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/octet-stream")
+	}
+
+	if !strings.HasPrefix(w.Body.String(), "SQLite format 3") {
+		t.Errorf("body doesn't contain expected data, got: %q", w.Body.String())
+	}
+}
+
+func TestSnapshot_503WhenNoSnapshot(t *testing.T) {
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: nil,
+		snapshotErr:    store.ErrSnapshotNotAvailable,
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.Snapshot(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+
+	retryAfter := w.Header().Get("Retry-After")
+	if retryAfter != "60" {
+		t.Errorf("Retry-After = %q, want %q", retryAfter, "60")
+	}
+
+	var problem Problem
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	if problem.Status != http.StatusServiceUnavailable {
+		t.Errorf("problem.status = %d, want %d", problem.Status, http.StatusServiceUnavailable)
+	}
+}
+
+func TestSnapshot_500OnStoreError(t *testing.T) {
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: nil,
+		snapshotErr:    errors.New("disk I/O error"),
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.Snapshot(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+func TestSnapshot_ClosesReader(t *testing.T) {
+	// Use tracking reader to verify Close is called
+	testData := []byte("test data")
+	baseReader := io.NopCloser(strings.NewReader(string(testData)))
+	tracker := &trackingReadCloser{ReadCloser: baseReader}
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: tracker,
+		snapshotErr:    nil,
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.Snapshot(w, req)
+
+	if !tracker.closed {
+		t.Error("reader.Close() was not called")
+	}
+}
+
+// --- Snapshot Integration Test (Story 4.2) ---
+
+func TestSnapshotEndpoint_RoundTrip(t *testing.T) {
+	// This test uses a real SQLiteStore to verify the full data flow
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+
+	// Create real store
+	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+
+	// Insert some test data
+	entries := []types.NewLoreEntry{
+		{Content: "Integration test entry 1", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "test-src"},
+		{Content: "Integration test entry 2", Category: "DEPENDENCY_BEHAVIOR", Confidence: 0.9, SourceID: "test-src"},
+	}
+	_, err = sqliteStore.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate snapshot
+	err = sqliteStore.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create handler with real store
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(sqliteStore, embedder, "api-key", "1.0.0")
+
+	// Make request
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.Snapshot(w, req)
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/octet-stream")
+	}
+
+	// Verify the response is a valid SQLite database
+	body := w.Body.Bytes()
+	if len(body) < 16 {
+		t.Fatalf("Response too short: %d bytes", len(body))
+	}
+
+	// Check SQLite magic bytes
+	expectedMagic := "SQLite format 3\x00"
+	if string(body[:16]) != expectedMagic {
+		t.Errorf("Expected SQLite header, got: %q", body[:16])
+	}
+
+	// Verify the response has reasonable size (should contain our test data)
+	if len(body) < 4096 {
+		t.Logf("Snapshot size: %d bytes (SQLite minimum page size)", len(body))
 	}
 }

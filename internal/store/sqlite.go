@@ -693,10 +693,19 @@ func (s *SQLiteStore) GetMetadata(ctx context.Context) (*types.StoreMetadata, er
 	return nil, ErrNotImplemented
 }
 
-// GetSnapshot returns a reader for the current snapshot.
-// TODO: Implement in Story 4.2 (Snapshot Serving Endpoint)
+// GetSnapshot returns an io.ReadCloser for the current snapshot file.
+// The caller is responsible for closing the reader.
+// Returns ErrSnapshotNotAvailable if no snapshot has been generated.
 func (s *SQLiteStore) GetSnapshot(ctx context.Context) (io.ReadCloser, error) {
-	return nil, ErrNotImplemented
+	path := s.snapshotPath()
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrSnapshotNotAvailable
+		}
+		return nil, fmt.Errorf("open snapshot: %w", err)
+	}
+	return file, nil
 }
 
 // GetDelta returns lore entries modified since the given time.

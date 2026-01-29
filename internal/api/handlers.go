@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -110,9 +112,40 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 }
 
 // Snapshot handles GET /api/v1/lore/snapshot
+// Streams the cached database snapshot as application/octet-stream.
+// Returns 503 with Retry-After if no snapshot is available.
 func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement snapshot generation
-	http.Error(w, "Not implemented", http.StatusNotImplemented)
+	start := time.Now()
+	slog.Debug("snapshot serve started", "component", "api", "action", "snapshot_serve_start")
+
+	reader, err := h.store.GetSnapshot(r.Context())
+	if errors.Is(err, store.ErrSnapshotNotAvailable) {
+		slog.Warn("snapshot not available", "component", "api", "action", "snapshot_not_available")
+		w.Header().Set("Retry-After", "60")
+		WriteProblem(w, r, http.StatusServiceUnavailable,
+			"Snapshot not yet available. Please retry after the indicated interval.")
+		return
+	}
+	if err != nil {
+		slog.Error("failed to get snapshot", "error", err)
+		WriteProblem(w, r, http.StatusInternalServerError,
+			"Internal error retrieving snapshot")
+		return
+	}
+	defer reader.Close()
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	bytesWritten, err := io.Copy(w, reader)
+	if err != nil {
+		slog.Debug("snapshot stream interrupted", "component", "api", "error", err)
+		return
+	}
+
+	slog.Info("snapshot serve completed",
+		"component", "api",
+		"action", "snapshot_serve",
+		"duration_ms", time.Since(start).Milliseconds(),
+		"bytes_written", bytesWritten)
 }
 
 // Delta handles GET /api/v1/lore/delta
