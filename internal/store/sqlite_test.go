@@ -2522,3 +2522,248 @@ func TestGetSnapshot_ReaderCloseable(t *testing.T) {
 	// but we don't want to panic
 	_ = reader.Close()
 }
+
+// --- GetDelta Tests (Story 4.3) ---
+
+func TestGetDelta_ReturnsUpdatedEntries(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entry
+	entries := []types.NewLoreEntry{
+		{Content: "Delta test entry", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Query with timestamp before insertion
+	since := time.Now().Add(-1 * time.Hour)
+	result, err := db.GetDelta(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Lore) != 1 {
+		t.Errorf("Expected 1 entry, got %d", len(result.Lore))
+	}
+	if result.Lore[0].Content != "Delta test entry" {
+		t.Errorf("Expected content 'Delta test entry', got %q", result.Lore[0].Content)
+	}
+}
+
+func TestGetDelta_ExcludesOldEntries(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entry
+	entries := []types.NewLoreEntry{
+		{Content: "Old entry", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Query with timestamp after insertion
+	since := time.Now().Add(1 * time.Hour)
+	result, err := db.GetDelta(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Lore) != 0 {
+		t.Errorf("Expected 0 entries (old entry excluded), got %d", len(result.Lore))
+	}
+}
+
+func TestGetDelta_ReturnsDeletedIDs(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert and then soft-delete an entry
+	entries := []types.NewLoreEntry{
+		{Content: "To be deleted", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	since := time.Now().Add(-1 * time.Hour)
+
+	// Soft delete using RFC3339 format (consistent with rest of codebase)
+	deletedAt := time.Now().UTC().Format(time.RFC3339)
+	_, err = db.db.Exec("UPDATE lore_entries SET deleted_at = ? WHERE id = ?", deletedAt, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := db.GetDelta(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be in deleted_ids, not in lore
+	if len(result.Lore) != 0 {
+		t.Errorf("Expected 0 lore entries (deleted), got %d", len(result.Lore))
+	}
+	if len(result.DeletedIDs) != 1 {
+		t.Fatalf("Expected 1 deleted ID, got %d", len(result.DeletedIDs))
+	}
+	if result.DeletedIDs[0] != id {
+		t.Errorf("Expected deleted ID %q, got %q", id, result.DeletedIDs[0])
+	}
+}
+
+func TestGetDelta_IncludesEmbeddings(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entry
+	entries := []types.NewLoreEntry{
+		{Content: "Entry with embedding", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID and add an embedding
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	embedding := make([]float32, 1536)
+	for i := range embedding {
+		embedding[i] = float32(i) / 1536.0
+	}
+	err = db.UpdateEmbedding(context.Background(), id, embedding)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	since := time.Now().Add(-1 * time.Hour)
+	result, err := db.GetDelta(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Lore) != 1 {
+		t.Fatalf("Expected 1 entry, got %d", len(result.Lore))
+	}
+	if len(result.Lore[0].Embedding) != 1536 {
+		t.Errorf("Expected embedding with 1536 dimensions, got %d", len(result.Lore[0].Embedding))
+	}
+}
+
+func TestGetDelta_EmptyResultNotNull(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No entries, query should return empty arrays not nil
+	since := time.Now().Add(-1 * time.Hour)
+	result, err := db.GetDelta(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Lore == nil {
+		t.Error("Expected Lore to be empty slice, got nil")
+	}
+	if result.DeletedIDs == nil {
+		t.Error("Expected DeletedIDs to be empty slice, got nil")
+	}
+	if len(result.Lore) != 0 {
+		t.Errorf("Expected 0 lore entries, got %d", len(result.Lore))
+	}
+	if len(result.DeletedIDs) != 0 {
+		t.Errorf("Expected 0 deleted IDs, got %d", len(result.DeletedIDs))
+	}
+}
+
+func TestGetDelta_AsOfIsRecent(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	before := time.Now().UTC()
+	since := time.Now().Add(-1 * time.Hour)
+	result, err := db.GetDelta(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().UTC()
+
+	if result.AsOf.Before(before) || result.AsOf.After(after) {
+		t.Errorf("AsOf %v not in expected range [%v, %v]", result.AsOf, before, after)
+	}
+}
+
+func TestGetDelta_OrderByUpdatedAt(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entries with small delays to ensure different timestamps
+	for i := 0; i < 3; i++ {
+		entry := types.NewLoreEntry{
+			Content:    "Entry " + string(rune('A'+i)),
+			Category:   "PATTERN_OUTCOME",
+			Confidence: 0.8,
+			SourceID:   "src",
+		}
+		_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	since := time.Now().Add(-1 * time.Hour)
+	result, err := db.GetDelta(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Lore) != 3 {
+		t.Fatalf("Expected 3 entries, got %d", len(result.Lore))
+	}
+
+	// Should be ordered by updated_at ASC (oldest first)
+	if result.Lore[0].Content != "Entry A" {
+		t.Errorf("Expected first entry 'Entry A', got %q", result.Lore[0].Content)
+	}
+	if result.Lore[2].Content != "Entry C" {
+		t.Errorf("Expected last entry 'Entry C', got %q", result.Lore[2].Content)
+	}
+}

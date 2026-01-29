@@ -149,16 +149,48 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delta handles GET /api/v1/lore/delta
+// Requires `since` query parameter in RFC3339 format.
+// Returns 400 if since is missing or invalid.
+// Returns JSON with lore[], deleted_ids[], and as_of.
 func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement delta sync
-	resp := types.DeltaResponse{
-		Lore:       []types.Lore{},
-		DeletedIDs: []string{},
-		AsOf:       time.Now().UTC().Format(time.RFC3339),
+	slog.Debug("delta sync requested", "component", "api", "action", "delta_start")
+	start := time.Now()
+
+	// Parse and validate since parameter
+	since := r.URL.Query().Get("since")
+	if since == "" {
+		slog.Warn("delta request missing since", "component", "api", "action", "delta_invalid_since")
+		WriteProblem(w, r, http.StatusBadRequest,
+			"Missing required query parameter: since")
+		return
 	}
 
+	sinceTime, err := time.Parse(time.RFC3339, since)
+	if err != nil {
+		slog.Warn("delta request invalid since", "component", "api", "action", "delta_invalid_since", "since", since, "error", err)
+		WriteProblem(w, r, http.StatusBadRequest,
+			"Invalid since timestamp: must be RFC3339 format (e.g., 2026-01-29T10:00:00Z)")
+		return
+	}
+
+	result, err := h.store.GetDelta(r.Context(), sinceTime)
+	if err != nil {
+		slog.Error("failed to get delta", "component", "api", "action", "delta_failed", "since", since, "error", err)
+		WriteProblem(w, r, http.StatusInternalServerError,
+			"Internal error retrieving delta")
+		return
+	}
+
+	slog.Info("delta sync completed",
+		"component", "api",
+		"action", "delta_sync",
+		"since", since,
+		"lore_count", len(result.Lore),
+		"deleted_count", len(result.DeletedIDs),
+		"duration_ms", time.Since(start).Milliseconds())
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(result)
 }
 
 // Feedback handles POST /api/v1/lore/feedback

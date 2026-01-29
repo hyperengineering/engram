@@ -709,9 +709,77 @@ func (s *SQLiteStore) GetSnapshot(ctx context.Context) (io.ReadCloser, error) {
 }
 
 // GetDelta returns lore entries modified since the given time.
-// TODO: Implement in Story 4.3 (Delta Sync Endpoint)
+// Returns entries updated after `since` (created or modified) and IDs of entries
+// deleted after `since`. The AsOf field contains the server time of the query.
+// Returns empty arrays (not nil) if no changes exist.
 func (s *SQLiteStore) GetDelta(ctx context.Context, since time.Time) (*types.DeltaResult, error) {
-	return nil, ErrNotImplemented
+	asOf := time.Now().UTC()
+	sinceStr := since.UTC().Format(time.RFC3339)
+
+	// Query 1: Updated/created entries (not deleted)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, content, context, category, confidence, embedding, embedding_status,
+		       source_id, sources, validation_count, created_at, updated_at, deleted_at, last_validated_at
+		FROM lore_entries
+		WHERE updated_at > ?
+		  AND deleted_at IS NULL
+		ORDER BY updated_at ASC
+	`, sinceStr)
+	if err != nil {
+		return nil, fmt.Errorf("query updated entries: %w", err)
+	}
+	defer rows.Close()
+
+	var lore []types.LoreEntry
+	for rows.Next() {
+		entry, err := scanLoreEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan entry: %w", err)
+		}
+		lore = append(lore, *entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+
+	// Query 2: Deleted entry IDs
+	deletedRows, err := s.db.QueryContext(ctx, `
+		SELECT id
+		FROM lore_entries
+		WHERE deleted_at IS NOT NULL
+		  AND deleted_at > ?
+		ORDER BY deleted_at ASC
+	`, sinceStr)
+	if err != nil {
+		return nil, fmt.Errorf("query deleted entries: %w", err)
+	}
+	defer deletedRows.Close()
+
+	var deletedIDs []string
+	for deletedRows.Next() {
+		var id string
+		if err := deletedRows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan deleted ID: %w", err)
+		}
+		deletedIDs = append(deletedIDs, id)
+	}
+	if err := deletedRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate deleted rows: %w", err)
+	}
+
+	// Ensure non-nil slices
+	if lore == nil {
+		lore = []types.LoreEntry{}
+	}
+	if deletedIDs == nil {
+		deletedIDs = []string{}
+	}
+
+	return &types.DeltaResult{
+		Lore:       lore,
+		DeletedIDs: deletedIDs,
+		AsOf:       asOf,
+	}, nil
 }
 
 // GenerateSnapshot generates a point-in-time snapshot of the lore database.

@@ -26,6 +26,8 @@ type mockStore struct {
 	lastEntries    []types.NewLoreEntry
 	snapshotReader io.ReadCloser
 	snapshotErr    error
+	deltaResult    *types.DeltaResult
+	deltaErr       error
 }
 
 func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
@@ -58,7 +60,7 @@ func (m *mockStore) GetSnapshot(ctx context.Context) (io.ReadCloser, error) {
 }
 
 func (m *mockStore) GetDelta(ctx context.Context, since time.Time) (*types.DeltaResult, error) {
-	return nil, nil
+	return m.deltaResult, m.deltaErr
 }
 
 func (m *mockStore) GenerateSnapshot(ctx context.Context) error {
@@ -1058,5 +1060,261 @@ func TestSnapshotEndpoint_RoundTrip(t *testing.T) {
 	// Verify the response has reasonable size (should contain our test data)
 	if len(body) < 4096 {
 		t.Logf("Snapshot size: %d bytes (SQLite minimum page size)", len(body))
+	}
+}
+
+// --- Delta Endpoint Tests (Story 4.3) ---
+
+func TestDelta_ReturnsEntries(t *testing.T) {
+	asOf := time.Now().UTC()
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		deltaResult: &types.DeltaResult{
+			Lore: []types.LoreEntry{
+				{
+					ID:       "test-id-1",
+					Content:  "Test content",
+					Category: "PATTERN_OUTCOME",
+				},
+			},
+			DeletedIDs: []string{},
+			AsOf:       asOf,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since=2026-01-28T10:00:00Z", nil)
+	w := httptest.NewRecorder()
+
+	handler.Delta(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+
+	var result types.DeltaResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(result.Lore) != 1 {
+		t.Errorf("expected 1 lore entry, got %d", len(result.Lore))
+	}
+}
+
+func TestDelta_400MissingSince(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	// No since parameter
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta", nil)
+	w := httptest.NewRecorder()
+
+	handler.Delta(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+
+	var problem Problem
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	if !strings.Contains(problem.Detail, "since") {
+		t.Errorf("problem.Detail should mention 'since', got: %q", problem.Detail)
+	}
+}
+
+func TestDelta_400InvalidSince(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	// Invalid since parameter
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since=not-a-timestamp", nil)
+	w := httptest.NewRecorder()
+
+	handler.Delta(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	var problem Problem
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	if !strings.Contains(problem.Detail, "RFC3339") {
+		t.Errorf("problem.Detail should mention 'RFC3339', got: %q", problem.Detail)
+	}
+}
+
+func TestDelta_EmptyArraysNotNull(t *testing.T) {
+	asOf := time.Now().UTC()
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		deltaResult: &types.DeltaResult{
+			Lore:       []types.LoreEntry{},
+			DeletedIDs: []string{},
+			AsOf:       asOf,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since=2026-01-28T10:00:00Z", nil)
+	w := httptest.NewRecorder()
+
+	handler.Delta(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Parse raw JSON to check arrays are [] not null
+	var rawResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	lore, ok := rawResp["lore"].([]any)
+	if !ok {
+		t.Errorf("lore should be array, got: %T", rawResp["lore"])
+	}
+	if lore == nil {
+		t.Error("lore should be [] not null")
+	}
+
+	deleted, ok := rawResp["deleted_ids"].([]any)
+	if !ok {
+		t.Errorf("deleted_ids should be array, got: %T", rawResp["deleted_ids"])
+	}
+	if deleted == nil {
+		t.Error("deleted_ids should be [] not null")
+	}
+}
+
+func TestDelta_IncludesAsOf(t *testing.T) {
+	asOf := time.Date(2026, 1, 29, 15, 0, 0, 0, time.UTC)
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		deltaResult: &types.DeltaResult{
+			Lore:       []types.LoreEntry{},
+			DeletedIDs: []string{},
+			AsOf:       asOf,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since=2026-01-28T10:00:00Z", nil)
+	w := httptest.NewRecorder()
+
+	handler.Delta(w, req)
+
+	var result types.DeltaResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if result.AsOf.IsZero() {
+		t.Error("as_of should be present")
+	}
+	if !result.AsOf.Equal(asOf) {
+		t.Errorf("as_of = %v, want %v", result.AsOf, asOf)
+	}
+}
+
+func TestDelta_500OnStoreError(t *testing.T) {
+	s := &mockStore{
+		stats:    &types.StoreStats{},
+		deltaErr: errors.New("database error"),
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since=2026-01-28T10:00:00Z", nil)
+	w := httptest.NewRecorder()
+
+	handler.Delta(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+// --- Delta Integration Test (Story 4.3) ---
+
+func TestDeltaEndpoint_RoundTrip(t *testing.T) {
+	// This test uses a real SQLiteStore to verify the full data flow
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+
+	// Create real store
+	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+
+	// Record timestamp before inserting data
+	sinceBefore := time.Now().UTC().Add(-1 * time.Second).Format(time.RFC3339)
+
+	// Insert test data
+	entries := []types.NewLoreEntry{
+		{Content: "Delta integration test entry", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "test-src"},
+	}
+	_, err = sqliteStore.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create handler with real store
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(sqliteStore, embedder, "api-key", "1.0.0")
+
+	// Make delta request
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since="+sinceBefore, nil)
+	w := httptest.NewRecorder()
+
+	handler.Delta(w, req)
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var result types.DeltaResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(result.Lore) != 1 {
+		t.Errorf("expected 1 lore entry, got %d", len(result.Lore))
+	}
+	if result.Lore[0].Content != "Delta integration test entry" {
+		t.Errorf("expected content 'Delta integration test entry', got %q", result.Lore[0].Content)
+	}
+	if result.AsOf.IsZero() {
+		t.Error("as_of should be set")
 	}
 }
