@@ -3074,6 +3074,65 @@ func TestRecordFeedback_SoftDeleted(t *testing.T) {
 	}
 }
 
+func TestRecordFeedback_MultipleHelpfulOnSameEntry(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create a lore entry
+	entries := []types.NewLoreEntry{
+		{Content: "Test lore", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	loreID := delta.Lore[0].ID
+
+	// Record helpful feedback 3 times sequentially
+	for i := 0; i < 3; i++ {
+		feedback := []types.FeedbackEntry{
+			{LoreID: loreID, Type: "helpful", SourceID: "client-1"},
+		}
+		result, err := db.RecordFeedback(context.Background(), feedback)
+		if err != nil {
+			t.Fatalf("Feedback %d failed: %v", i+1, err)
+		}
+
+		// Verify validation_count increments each time
+		if result.Updates[0].ValidationCount == nil {
+			t.Fatalf("Feedback %d: ValidationCount should be set", i+1)
+		}
+		expectedCount := i + 1
+		if *result.Updates[0].ValidationCount != expectedCount {
+			t.Errorf("Feedback %d: ValidationCount = %d, want %d", i+1, *result.Updates[0].ValidationCount, expectedCount)
+		}
+	}
+
+	// Verify final state
+	entry, _ := db.GetLore(context.Background(), loreID)
+
+	// Confidence: 0.5 + (3 * 0.08) = 0.74
+	expectedConfidence := 0.74
+	if math.Abs(entry.Confidence-expectedConfidence) > 0.001 {
+		t.Errorf("Final confidence = %v, want %v", entry.Confidence, expectedConfidence)
+	}
+
+	// ValidationCount should be 3
+	if entry.ValidationCount != 3 {
+		t.Errorf("Final ValidationCount = %d, want 3", entry.ValidationCount)
+	}
+
+	// LastValidatedAt should be set
+	if entry.LastValidatedAt == nil {
+		t.Error("LastValidatedAt should be set after helpful feedback")
+	}
+}
+
 // --- DecayConfidence Tests (Story 5.2) ---
 
 func TestDecayConfidence_AffectsStaleEntries(t *testing.T) {

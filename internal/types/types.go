@@ -146,10 +146,13 @@ type DeltaResult struct {
 }
 
 // FeedbackEntry represents a single feedback submission.
+// Note: SourceID is captured for request context but intentionally not persisted.
+// Feedback is anonymous by design - we track what lore is helpful/incorrect,
+// not who reported it. This prevents gaming and protects client privacy.
 type FeedbackEntry struct {
 	LoreID   string `json:"lore_id"`
 	Type     string `json:"type"`
-	SourceID string `json:"source_id"`
+	SourceID string `json:"source_id"` // For logging/debugging only; not persisted
 }
 
 // FeedbackResult represents the outcome of recording feedback.

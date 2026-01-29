@@ -919,6 +919,8 @@ func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.Feedb
 		if newConfidence < MinConfidence {
 			newConfidence = MinConfidence
 		}
+		// Round to 6 decimal places to prevent floating point drift
+		newConfidence = math.Round(newConfidence*1e6) / 1e6
 
 		// Build result update
 		update := types.FeedbackResultUpdate{
@@ -964,7 +966,7 @@ func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.Feedb
 }
 
 // DecayConfidence reduces confidence for entries not validated since threshold.
-// Entries with last_validated_at < threshold OR last_validated_at IS NULL are decayed.
+// Entries with last_validated_at <= threshold OR last_validated_at IS NULL are decayed.
 // Uses a single bulk UPDATE with floor enforcement via max(0.0, confidence - amount).
 func (s *SQLiteStore) DecayConfidence(ctx context.Context, threshold time.Time, amount float64) (int64, error) {
 	thresholdStr := threshold.UTC().Format(time.RFC3339)
@@ -975,7 +977,7 @@ func (s *SQLiteStore) DecayConfidence(ctx context.Context, threshold time.Time, 
 		SET confidence = max(0.0, confidence - ?),
 		    updated_at = ?
 		WHERE deleted_at IS NULL
-		  AND (last_validated_at < ? OR last_validated_at IS NULL)
+		  AND (last_validated_at <= ? OR last_validated_at IS NULL)
 	`, amount, now, thresholdStr)
 
 	if err != nil {

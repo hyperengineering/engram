@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1662,5 +1663,135 @@ func TestFeedback_ContentType(t *testing.T) {
 	contentType := w.Header().Get("Content-Type")
 	if contentType != "application/json" {
 		t.Errorf("Content-Type = %q, want %q for success response", contentType, "application/json")
+	}
+}
+
+// --- Graceful Shutdown Tests (Epic 5 Retro Action Item) ---
+
+// slowFeedbackStore wraps mockStore with a delay for testing graceful shutdown
+type slowFeedbackStore struct {
+	*mockStore
+	delay time.Duration
+}
+
+func (s *slowFeedbackStore) RecordFeedback(ctx context.Context, feedback []types.FeedbackEntry) (*types.FeedbackResult, error) {
+	// Simulate slow processing
+	select {
+	case <-time.After(s.delay):
+		// Processing completed
+	case <-ctx.Done():
+		// Context cancelled - but we still complete the operation
+		// This simulates "flush" behavior where in-flight ops complete
+	}
+	return s.mockStore.RecordFeedback(ctx, feedback)
+}
+
+func TestFlushDuringGracefulShutdown_FeedbackCompletes(t *testing.T) {
+	// This test verifies that in-flight feedback operations complete during graceful shutdown.
+	// The server's Shutdown() method drains in-flight requests before returning.
+
+	validationCount := 1
+	baseStore := &mockStore{
+		stats: &types.StoreStats{},
+		feedbackResult: &types.FeedbackResult{
+			Updates: []types.FeedbackResultUpdate{
+				{
+					LoreID:             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+					PreviousConfidence: 0.5,
+					CurrentConfidence:  0.58,
+					ValidationCount:    &validationCount,
+				},
+			},
+		},
+	}
+	slowStore := &slowFeedbackStore{mockStore: baseStore, delay: 100 * time.Millisecond}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := NewHandler(slowStore, embedder, "test-key", "1.0.0")
+	router := NewRouter(handler)
+
+	// Create a real HTTP server
+	srv := &http.Server{
+		Handler: router,
+	}
+
+	// Use a listener to get a random available port
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+
+	// Start server in goroutine
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := srv.Serve(listener); err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	// Wait for server to be ready
+	time.Sleep(10 * time.Millisecond)
+
+	// Start a slow feedback request in goroutine
+	requestDone := make(chan struct {
+		statusCode int
+		err        error
+	}, 1)
+
+	go func() {
+		body := `{
+			"source_id": "shutdown-test",
+			"feedback": [
+				{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "helpful"}
+			]
+		}`
+		req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/api/v1/lore/feedback", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			requestDone <- struct {
+				statusCode int
+				err        error
+			}{0, err}
+			return
+		}
+		defer resp.Body.Close()
+		requestDone <- struct {
+			statusCode int
+			err        error
+		}{resp.StatusCode, nil}
+	}()
+
+	// Wait a bit for request to start processing, then initiate shutdown
+	time.Sleep(20 * time.Millisecond)
+
+	// Initiate graceful shutdown with generous timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		t.Errorf("Shutdown error: %v", err)
+	}
+
+	// Verify the in-flight request completed successfully
+	result := <-requestDone
+	if result.err != nil {
+		t.Errorf("Request failed during shutdown: %v", result.err)
+	}
+	if result.statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d (feedback should complete during shutdown)", result.statusCode)
+	}
+
+	// Check for server errors
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Errorf("Server error: %v", err)
+		}
+	default:
 	}
 }
