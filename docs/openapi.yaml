@@ -1,0 +1,646 @@
+openapi: 3.0.3
+info:
+  title: Engram API
+  description: |
+    Lore persistence and synchronization service for AI agent memory.
+
+    Engram provides a central repository for experiential knowledge (lore) that
+    AI agents accumulate during development sessions. Features include semantic
+    deduplication, confidence scoring, feedback integration, and efficient sync.
+  version: 1.0.0
+  contact:
+    name: Engram Team
+  license:
+    name: MIT
+
+servers:
+  - url: https://engram.fly.dev/api/v1
+    description: Production
+  - url: http://localhost:8080/api/v1
+    description: Local development
+
+tags:
+  - name: Health
+    description: Service health and status
+  - name: Lore
+    description: Lore ingestion and retrieval
+  - name: Sync
+    description: Snapshot and delta synchronization
+  - name: Feedback
+    description: Lore quality feedback
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Check service health
+      description: Returns service status, version, and configuration. No authentication required.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "healthy"
+                version: "1.0.0"
+                embedding_model: "text-embedding-3-small"
+                lore_count: 1523
+                last_snapshot: "2026-01-29T14:30:00Z"
+
+  /lore:
+    post:
+      tags: [Lore]
+      summary: Ingest lore entries
+      description: |
+        Submit a batch of lore entries for persistence. Entries are validated,
+        embedded, deduplicated, and stored. Semantically equivalent entries
+        are merged rather than duplicated.
+
+        **Partial acceptance**: Valid entries are accepted even if others fail.
+        Check the `rejected` count and `errors` array for failed entries.
+      operationId: ingestLore
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+            example:
+              source_id: "devcontainer-abc123"
+              lore:
+                - content: "SQLite requires explicit BEGIN for write transactions"
+                  category: "DEPENDENCY_BEHAVIOR"
+                  confidence: 0.8
+                - content: "Using defer for cleanup ensures resources are released"
+                  context: "Discovered during code review"
+                  category: "PATTERN_OUTCOME"
+                  confidence: 0.9
+      responses:
+        '200':
+          description: Batch processed (check rejected count for failures)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+              example:
+                accepted: 2
+                merged: 0
+                rejected: 0
+                errors: []
+        '400':
+          description: Invalid JSON syntax
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Request-level validation failed (empty batch, missing source_id)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetailsWithErrors'
+
+  /lore/snapshot:
+    get:
+      tags: [Sync]
+      summary: Download full snapshot
+      description: |
+        Download a complete database snapshot for initial bootstrap.
+        Returns a SQLite database file containing all lore entries with
+        embeddings for client-side semantic search.
+      operationId: getSnapshot
+      responses:
+        '200':
+          description: SQLite database snapshot
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Snapshot not yet available
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds to wait before retrying
+              example: 60
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /lore/delta:
+    get:
+      tags: [Sync]
+      summary: Get incremental changes
+      description: |
+        Retrieve lore changes since a given timestamp. Returns new/updated
+        entries and IDs of deleted entries. Use the `as_of` timestamp from
+        the response for the next delta request.
+      operationId: getDelta
+      parameters:
+        - name: since
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          description: RFC3339 timestamp to get changes from
+          example: "2026-01-28T00:00:00Z"
+      responses:
+        '200':
+          description: Delta changes since the given timestamp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeltaResult'
+              example:
+                lore:
+                  - id: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+                    content: "SQLite requires explicit BEGIN for write transactions"
+                    category: "DEPENDENCY_BEHAVIOR"
+                    confidence: 0.8
+                    sources: ["devcontainer-abc123"]
+                    validation_count: 2
+                    created_at: "2026-01-28T10:00:00Z"
+                    updated_at: "2026-01-29T14:30:00Z"
+                    embedding_status: "ready"
+                deleted_ids: []
+                as_of: "2026-01-29T14:35:00Z"
+        '400':
+          description: Invalid or missing `since` parameter
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/bad-request"
+                title: "Bad Request"
+                status: 400
+                detail: "since parameter must be a valid RFC3339 timestamp"
+                instance: "/api/v1/lore/delta"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /lore/feedback:
+    post:
+      tags: [Feedback]
+      summary: Submit lore feedback
+      description: |
+        Submit batch feedback on lore entries. Feedback affects confidence scores:
+
+        - `helpful`: +0.08 confidence, increments validation_count, updates last_validated_at
+        - `incorrect`: -0.15 confidence
+        - `not_relevant`: no change (acknowledgment only)
+
+        Confidence is capped at 1.0 and floored at 0.0.
+
+        **Fail-fast**: If any lore_id does not exist, the entire batch is rejected.
+      operationId: submitFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackRequest'
+            example:
+              source_id: "devcontainer-abc123"
+              feedback:
+                - lore_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+                  type: "helpful"
+                - lore_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+                  type: "incorrect"
+      responses:
+        '200':
+          description: Feedback processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedbackResult'
+              example:
+                updates:
+                  - lore_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+                    previous_confidence: 0.72
+                    current_confidence: 0.80
+                    validation_count: 3
+                  - lore_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+                    previous_confidence: 0.65
+                    current_confidence: 0.50
+        '400':
+          description: Invalid JSON syntax
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: One or more lore_id values not found (entire batch rejected)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/not-found"
+                title: "Not Found"
+                status: 404
+                detail: "Resource not found"
+                instance: "/api/v1/lore/feedback"
+        '422':
+          description: Validation failed (invalid ULID, invalid type, etc.)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetailsWithErrors'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        API key authentication via Bearer token.
+        Include header: `Authorization: Bearer <your-api-key>`
+
+  schemas:
+    # === Core Types ===
+
+    LoreEntry:
+      type: object
+      description: A discrete unit of experiential knowledge
+      required:
+        - id
+        - content
+        - category
+        - confidence
+        - sources
+        - validation_count
+        - created_at
+        - updated_at
+        - embedding_status
+      properties:
+        id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: ULID identifier (Crockford Base32, 26 characters)
+          example: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        content:
+          type: string
+          maxLength: 4000
+          description: The lore content text
+          example: "SQLite requires explicit BEGIN for write transactions"
+        context:
+          type: string
+          maxLength: 1000
+          description: Additional context about when/where this was learned
+          example: "Discovered during performance profiling"
+        category:
+          $ref: '#/components/schemas/Category'
+        confidence:
+          type: number
+          format: double
+          minimum: 0.0
+          maximum: 1.0
+          description: Confidence score (0.0 = low, 1.0 = high)
+          example: 0.85
+        embedding:
+          type: array
+          items:
+            type: number
+            format: float
+          description: 1536-dimensional embedding vector (text-embedding-3-small)
+        source_id:
+          type: string
+          description: Primary source environment identifier
+          example: "devcontainer-abc123"
+        sources:
+          type: array
+          items:
+            type: string
+          description: All source environment identifiers that contributed
+          example: ["devcontainer-abc123", "devcontainer-def456"]
+        validation_count:
+          type: integer
+          minimum: 0
+          description: Number of times marked as helpful
+          example: 5
+        last_validated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last helpful feedback
+          example: "2026-01-29T14:30:00Z"
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+          example: "2026-01-28T10:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: Last modification timestamp
+          example: "2026-01-29T14:30:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp (null if active)
+        embedding_status:
+          type: string
+          enum: [pending, ready, failed]
+          description: Status of embedding generation
+          example: "ready"
+
+    NewLoreEntry:
+      type: object
+      description: Input for creating a new lore entry
+      required:
+        - content
+        - category
+        - confidence
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: The lore content text (required, non-empty)
+        context:
+          type: string
+          maxLength: 1000
+          description: Additional context (optional)
+        category:
+          $ref: '#/components/schemas/Category'
+        confidence:
+          type: number
+          format: double
+          minimum: 0.0
+          maximum: 1.0
+          description: Initial confidence score
+
+    Category:
+      type: string
+      description: Classification of lore type
+      enum:
+        - ARCHITECTURAL_DECISION
+        - PATTERN_OUTCOME
+        - INTERFACE_LESSON
+        - EDGE_CASE_DISCOVERY
+        - IMPLEMENTATION_FRICTION
+        - TESTING_STRATEGY
+        - DEPENDENCY_BEHAVIOR
+        - PERFORMANCE_INSIGHT
+      example: "DEPENDENCY_BEHAVIOR"
+
+    # === Request/Response Types ===
+
+    IngestRequest:
+      type: object
+      description: Batch lore ingestion request
+      required:
+        - source_id
+        - lore
+      properties:
+        source_id:
+          type: string
+          minLength: 1
+          description: Source environment identifier
+          example: "devcontainer-abc123"
+        lore:
+          type: array
+          items:
+            $ref: '#/components/schemas/NewLoreEntry'
+          minItems: 1
+          maxItems: 50
+          description: Lore entries to ingest (1-50 per batch)
+
+    IngestResult:
+      type: object
+      description: Result of batch ingestion
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+          description: New entries created
+          example: 2
+        merged:
+          type: integer
+          minimum: 0
+          description: Entries merged with existing (semantic duplicates)
+          example: 1
+        rejected:
+          type: integer
+          minimum: 0
+          description: Entries that failed validation
+          example: 0
+        errors:
+          type: array
+          items:
+            type: string
+          description: Error messages for rejected entries
+          example: ["lore[2].content: exceeds maximum length of 4000 characters"]
+
+    DeltaResult:
+      type: object
+      description: Incremental changes since a timestamp
+      properties:
+        lore:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoreEntry'
+          description: New or updated lore entries
+        deleted_ids:
+          type: array
+          items:
+            type: string
+          description: IDs of deleted entries
+          example: ["01ARZ3NDEKTSV4RRFFQ69G5FAX"]
+        as_of:
+          type: string
+          format: date-time
+          description: Timestamp for next delta request
+          example: "2026-01-29T14:35:00Z"
+
+    FeedbackRequest:
+      type: object
+      description: Batch feedback submission
+      required:
+        - source_id
+        - feedback
+      properties:
+        source_id:
+          type: string
+          minLength: 1
+          description: Source environment identifier
+          example: "devcontainer-abc123"
+        feedback:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackEntry'
+          minItems: 1
+          maxItems: 50
+          description: Feedback entries (1-50 per batch)
+
+    FeedbackEntry:
+      type: object
+      description: Single feedback item
+      required:
+        - lore_id
+        - type
+      properties:
+        lore_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: ULID of the lore entry
+          example: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        type:
+          type: string
+          enum: [helpful, not_relevant, incorrect]
+          description: |
+            Feedback type:
+            - helpful: +0.08 confidence
+            - incorrect: -0.15 confidence
+            - not_relevant: no change
+          example: "helpful"
+
+    FeedbackResult:
+      type: object
+      description: Result of feedback submission
+      properties:
+        updates:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackResultUpdate'
+          description: Confidence changes for each entry
+
+    FeedbackResultUpdate:
+      type: object
+      description: Confidence change for a single entry
+      properties:
+        lore_id:
+          type: string
+          description: ULID of the affected entry
+          example: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        previous_confidence:
+          type: number
+          format: double
+          description: Confidence before feedback
+          example: 0.72
+        current_confidence:
+          type: number
+          format: double
+          description: Confidence after feedback
+          example: 0.80
+        validation_count:
+          type: integer
+          description: Updated validation count (only for helpful feedback)
+          example: 3
+
+    HealthResponse:
+      type: object
+      description: Service health information
+      properties:
+        status:
+          type: string
+          enum: [healthy]
+          description: Service status
+          example: "healthy"
+        version:
+          type: string
+          description: API version
+          example: "1.0.0"
+        embedding_model:
+          type: string
+          description: Embedding model in use
+          example: "text-embedding-3-small"
+        lore_count:
+          type: integer
+          description: Total lore entries stored
+          example: 1523
+        last_snapshot:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last snapshot generation
+          example: "2026-01-29T14:30:00Z"
+
+    # === Error Types (RFC 7807) ===
+
+    ProblemDetails:
+      type: object
+      description: RFC 7807 Problem Details for HTTP APIs
+      required:
+        - type
+        - title
+        - status
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI identifying the error type
+          example: "https://engram.dev/errors/validation-error"
+        title:
+          type: string
+          description: Human-readable error summary
+          example: "Validation Error"
+        status:
+          type: integer
+          description: HTTP status code
+          example: 422
+        detail:
+          type: string
+          description: Human-readable explanation
+          example: "Request contains invalid fields"
+        instance:
+          type: string
+          description: URI of the request that caused the error
+          example: "/api/v1/lore"
+
+    ProblemDetailsWithErrors:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                $ref: '#/components/schemas/ValidationError'
+              description: Field-level validation errors
+
+    ValidationError:
+      type: object
+      description: Single field validation error
+      properties:
+        field:
+          type: string
+          description: Field path that failed validation
+          example: "lore[0].content"
+        message:
+          type: string
+          description: Error message
+          example: "exceeds maximum length of 4000 characters"
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: "https://engram.dev/errors/unauthorized"
+            title: "Unauthorized"
+            status: 401
+            detail: "Missing or invalid Authorization header"
+            instance: "/api/v1/lore"
+
+security:
+  - bearerAuth: []
