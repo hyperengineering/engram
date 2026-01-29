@@ -92,8 +92,14 @@ func run(cmd *cobra.Command, args []string) error {
 	)
 	startWorker(ctx, &wg, "embedding-retry", embeddingRetryWorker.Run)
 
+	// Initialize and start snapshot generation worker
+	snapshotWorker := worker.NewSnapshotGenerationWorker(
+		db,
+		time.Duration(cfg.Worker.SnapshotInterval),
+	)
+	startWorker(ctx, &wg, "snapshot-generation", snapshotWorker.Run)
+
 	// Future workers plug in here:
-	// startWorker(ctx, &wg, "snapshot", snapshotWorker.Run)
 	// startWorker(ctx, &wg, "decay", decayWorker.Run)
 
 	// 10. Start HTTP server in goroutine

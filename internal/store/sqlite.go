@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/hyperengineering/engram/internal/types"
@@ -74,9 +75,12 @@ func addSourceID(sources []string, newSourceID string) ([]string, bool) {
 
 // SQLiteStore represents the SQLite-backed lore database.
 type SQLiteStore struct {
-	db       *sql.DB
-	embedder Embedder
-	cfg      Config
+	db           *sql.DB
+	dbPath       string
+	embedder     Embedder
+	cfg          Config
+	snapshotMu   sync.Mutex
+	lastSnapshot *time.Time
 }
 
 // Embedder is the interface for embedding generation (matches embedding.Embedder).
@@ -119,7 +123,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{db: db, dbPath: dbPath}, nil
 }
 
 // SetDependencies configures the embedder and config for deduplication.
@@ -150,6 +154,16 @@ func enablePragmas(db *sql.DB) error {
 // Close closes the database connection
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// snapshotDir returns the directory for snapshot files.
+func (s *SQLiteStore) snapshotDir() string {
+	return filepath.Join(filepath.Dir(s.dbPath), "snapshots")
+}
+
+// snapshotPath returns the path to the current snapshot file.
+func (s *SQLiteStore) snapshotPath() string {
+	return filepath.Join(s.snapshotDir(), "current.db")
 }
 
 
@@ -190,7 +204,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 
 	return &types.StoreStats{
 		LoreCount:    count,
-		LastSnapshot: nil, // Snapshot tracking not yet implemented
+		LastSnapshot: s.lastSnapshot,
 	}, nil
 }
 
@@ -691,16 +705,72 @@ func (s *SQLiteStore) GetDelta(ctx context.Context, since time.Time) (*types.Del
 	return nil, ErrNotImplemented
 }
 
-// GenerateSnapshot generates a new snapshot file.
-// TODO: Implement in Story 4.1 (Snapshot Generation Worker)
+// GenerateSnapshot generates a point-in-time snapshot of the lore database.
+// The snapshot is stored as a SQLite file containing all lore entries with embeddings.
+// Returns ErrSnapshotInProgress if generation is already running.
 func (s *SQLiteStore) GenerateSnapshot(ctx context.Context) error {
-	return ErrNotImplemented
+	// Try to acquire snapshot lock (non-blocking)
+	if !s.snapshotMu.TryLock() {
+		return ErrSnapshotInProgress
+	}
+	defer s.snapshotMu.Unlock()
+
+	start := time.Now()
+
+	// Ensure snapshot directory exists
+	snapshotDir := s.snapshotDir()
+	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+		return fmt.Errorf("create snapshot directory: %w", err)
+	}
+
+	// Generate temp filename for atomic replacement
+	tempPath := filepath.Join(snapshotDir, fmt.Sprintf("snapshot_%d.db.tmp", time.Now().UnixNano()))
+	finalPath := s.snapshotPath()
+
+	// Use VACUUM INTO for point-in-time backup (non-blocking to writers)
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s'", tempPath))
+	if err != nil {
+		// Clean up temp file on error
+		os.Remove(tempPath)
+		return fmt.Errorf("vacuum into snapshot: %w", err)
+	}
+
+	// Get snapshot file size for logging
+	info, err := os.Stat(tempPath)
+	var sizeBytes int64
+	if err == nil {
+		sizeBytes = info.Size()
+	}
+
+	// Atomic rename to final location
+	if err := os.Rename(tempPath, finalPath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("rename snapshot: %w", err)
+	}
+
+	// Update last snapshot timestamp
+	now := time.Now().UTC()
+	s.lastSnapshot = &now
+
+	duration := time.Since(start)
+	slog.Info("snapshot generated",
+		"component", "store",
+		"action", "snapshot_complete",
+		"duration_ms", duration.Milliseconds(),
+		"size_bytes", sizeBytes,
+	)
+
+	return nil
 }
 
-// GetSnapshotPath returns the path to the current snapshot file.
-// TODO: Implement in Story 4.1 (Snapshot Generation Worker)
+// GetSnapshotPath returns the filesystem path to the current snapshot.
+// Returns ErrSnapshotNotAvailable if no snapshot has been generated.
 func (s *SQLiteStore) GetSnapshotPath(ctx context.Context) (string, error) {
-	return "", ErrNotImplemented
+	path := s.snapshotPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", ErrSnapshotNotAvailable
+	}
+	return path, nil
 }
 
 // RecordFeedback records feedback entries and adjusts confidence.

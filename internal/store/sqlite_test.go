@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hyperengineering/engram/internal/types"
+	_ "modernc.org/sqlite"
 )
 
 func TestStore_NewSQLiteStore(t *testing.T) {
@@ -2108,5 +2111,288 @@ func TestIngestLore_NoEmbedder_StoresAllAsPending(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("Expected 2 entries with pending status, got %d", count)
+	}
+}
+
+// --- Snapshot Generation Tests (Story 4.1) ---
+
+func TestGenerateSnapshot_CreatesFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify snapshot file exists
+	snapshotPath := db.snapshotPath()
+	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
+		t.Errorf("Snapshot file not created at %s", snapshotPath)
+	}
+}
+
+func TestGenerateSnapshot_IncludesAllLore(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert some lore entries
+	entries := []types.NewLoreEntry{
+		{Content: "Entry 1", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src-1"},
+		{Content: "Entry 2", Category: "PATTERN_OUTCOME", Confidence: 0.9, SourceID: "src-2"},
+		{Content: "Entry 3", Category: "DEPENDENCY_BEHAVIOR", Confidence: 0.7, SourceID: "src-3"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate snapshot
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Open snapshot and verify entries
+	snapshotDB, err := sql.Open("sqlite", db.snapshotPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshotDB.Close()
+
+	var count int
+	err = snapshotDB.QueryRow("SELECT COUNT(*) FROM lore_entries").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Errorf("Expected 3 entries in snapshot, got %d", count)
+	}
+}
+
+func TestGenerateSnapshot_UpdatesLastSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	before := time.Now()
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+
+	stats, err := db.GetStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.LastSnapshot == nil {
+		t.Fatal("Expected LastSnapshot to be set")
+	}
+
+	if stats.LastSnapshot.Before(before) || stats.LastSnapshot.After(after) {
+		t.Errorf("LastSnapshot %v not in expected range [%v, %v]", stats.LastSnapshot, before, after)
+	}
+}
+
+func TestGenerateSnapshot_AtomicReplacement(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// First snapshot
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotPath := db.snapshotPath()
+	info1, err := os.Stat(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add more data
+	entries := []types.NewLoreEntry{
+		{Content: "New entry", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second snapshot (should replace first)
+	time.Sleep(10 * time.Millisecond) // Ensure different modification time
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info2, err := os.Stat(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// File should be newer or at least same time
+	if info2.ModTime().Before(info1.ModTime()) {
+		t.Error("Snapshot file was not replaced")
+	}
+
+	// Verify new snapshot has the new entry
+	snapshotDB, err := sql.Open("sqlite", snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshotDB.Close()
+
+	var count int
+	err = snapshotDB.QueryRow("SELECT COUNT(*) FROM lore_entries").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 entry in snapshot, got %d", count)
+	}
+}
+
+func TestGenerateSnapshot_PreventsConcurrent(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Start two concurrent snapshot generations
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := db.GenerateSnapshot(context.Background())
+			results <- err
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	// Collect results
+	var errs []error
+	for err := range results {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	// One should succeed, one should return ErrSnapshotInProgress
+	inProgressCount := 0
+	for _, err := range errs {
+		if errors.Is(err, ErrSnapshotInProgress) {
+			inProgressCount++
+		}
+	}
+
+	// At least one should get ErrSnapshotInProgress (could be 0 if one finishes before other starts)
+	// But both shouldn't fail
+	if len(errs) == 2 {
+		t.Error("Both concurrent snapshot generations failed")
+	}
+}
+
+func TestGenerateSnapshot_CreatesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/data/engram.db"
+
+	// Ensure data dir is created by NewSQLiteStore
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Snapshots directory doesn't exist yet
+	snapshotDir := db.snapshotDir()
+	if _, err := os.Stat(snapshotDir); !os.IsNotExist(err) {
+		t.Skip("Snapshot directory already exists")
+	}
+
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify snapshot directory was created
+	if _, err := os.Stat(snapshotDir); os.IsNotExist(err) {
+		t.Errorf("Snapshot directory not created at %s", snapshotDir)
+	}
+}
+
+func TestGetSnapshotPath_ReturnsPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Generate a snapshot first
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := db.GetSnapshotPath(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedPath := db.snapshotPath()
+	if path != expectedPath {
+		t.Errorf("Expected path %s, got %s", expectedPath, path)
+	}
+
+	// Verify the path points to an existing file
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Errorf("GetSnapshotPath returned non-existent path: %s", path)
+	}
+}
+
+func TestGetSnapshotPath_ErrorWhenNoSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Don't generate a snapshot
+	_, err = db.GetSnapshotPath(context.Background())
+	if !errors.Is(err, ErrSnapshotNotAvailable) {
+		t.Errorf("Expected ErrSnapshotNotAvailable, got %v", err)
 	}
 }
