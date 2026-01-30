@@ -9,7 +9,7 @@ Engram enables AI agents to accumulate, persist, and recall experiential lore ac
 | Term | Role | Description |
 |------|------|-------------|
 | **Engram** | Central service | Where lore is stored and synchronized |
-| **Recall** | Local client | How agents retrieve and contribute lore |
+| **Recall** | Local client | How agents retrieve and contribute lore (separate repository) |
 | **Lore** | The knowledge | Individual learnings — the substance itself |
 
 ## Quick Start
@@ -40,7 +40,7 @@ make test
 make build
 
 # Run the service
-make run
+./engram
 ```
 
 ### Using Devcontainer
@@ -51,14 +51,16 @@ Open the repository in VS Code with the Dev Containers extension installed. The 
 
 ```
 engram/
-├── cmd/engram/           # Engram central service binary
+├── cmd/engram/           # Service entry point
 ├── internal/
-│   ├── api/              # HTTP API layer
+│   ├── api/              # HTTP handlers, middleware, routing
 │   ├── config/           # Configuration management
-│   ├── embedding/        # Embedding service client
-│   ├── store/            # Lore database operations
-│   └── types/            # Shared types
-├── pkg/recall/           # Recall client library (importable by Forge)
+│   ├── embedding/        # OpenAI embedding client
+│   ├── store/            # SQLite lore database operations
+│   ├── types/            # Domain types
+│   ├── validation/       # Input validation
+│   └── worker/           # Background workers (embedding retry, decay, snapshot)
+├── migrations/           # Database migrations
 ├── docs/                 # Documentation
 └── .devcontainer/        # Development container configuration
 ```
@@ -67,44 +69,39 @@ engram/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/health` | GET | Health check |
-| `/api/v1/lore` | POST | Ingest lore |
+| `/api/v1/health` | GET | Health check and service status |
+| `/api/v1/lore` | POST | Ingest lore entries |
+| `/api/v1/lore/{id}` | DELETE | Soft-delete a lore entry |
 | `/api/v1/lore/snapshot` | GET | Download database snapshot |
 | `/api/v1/lore/delta` | GET | Get changes since timestamp |
-| `/api/v1/lore/feedback` | POST | Submit feedback on lore |
+| `/api/v1/lore/feedback` | POST | Submit feedback on lore quality |
 
-## Recall Client Library
+See [docs/openapi.yaml](docs/openapi.yaml) for the complete OpenAPI specification.
 
-The Recall client library is available at `github.com/hyperengineering/engram/pkg/recall`:
+## Background Workers
 
-```go
-import "github.com/hyperengineering/engram/pkg/recall"
+Engram runs several background workers:
 
-client, err := recall.New(recall.Config{
-    LocalPath:    "/path/to/local/lore.db",
-    EngramURL:    "https://engram.forge.dev",
-    APIKey:       os.Getenv("ENGRAM_API_KEY"),
-    SyncInterval: 5 * time.Minute,
-})
+| Worker | Interval | Purpose |
+|--------|----------|---------|
+| Embedding Retry | 30s | Retry failed embedding generations |
+| Confidence Decay | 24h | Decay confidence for stale lore |
+| Snapshot | 1h | Generate point-in-time database snapshots |
 
-// Query lore
-result, err := client.Query(recall.QueryParams{
-    Query: "queue consumer patterns",
-    K:     5,
-})
+## Configuration
 
-// Record new lore
-lore, err := client.Record(recall.RecordParams{
-    Content:  "Queue consumers benefit from idempotency checks",
-    Category: recall.CategoryPatternOutcome,
-    Context:  "story-2.1 implementation",
-})
+Environment variables:
 
-// Provide feedback
-result, err := client.Feedback(recall.FeedbackParams{
-    Helpful: []string{"L1", "L2"},
-})
-```
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ENGRAM_ADDRESS` | No | `0.0.0.0:8080` | Server listen address |
+| `ENGRAM_DB_PATH` | No | `./data/lore.db` | SQLite database path |
+| `OPENAI_API_KEY` | Yes | — | OpenAI API key for embeddings |
+| `OPENAI_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model |
+| `ENGRAM_API_KEY` | Yes | — | API key for authentication |
+| `ENGRAM_LOG_LEVEL` | No | `info` | Log level (debug, info, warn, error) |
+
+See [docs/configuration.md](docs/configuration.md) for detailed configuration options.
 
 ## Deployment
 
@@ -125,10 +122,31 @@ fly secrets set ENGRAM_API_KEY=...
 fly deploy
 ```
 
+### Docker
+
+```bash
+docker build -t engram .
+docker run -p 8080:8080 \
+  -e OPENAI_API_KEY=sk-... \
+  -e ENGRAM_API_KEY=... \
+  -v engram_data:/data \
+  engram
+```
+
+## Client Library
+
+The Recall client library is maintained in a separate repository:
+
+- **Repository:** [github.com/hyperengineering/recall](https://github.com/hyperengineering/recall)
+
 ## Documentation
 
-See [docs/engram.md](docs/engram.md) for the full technical design document.
+- [Getting Started](docs/getting-started.md) — Quick start guide
+- [API Usage](docs/api-usage.md) — API examples and patterns
+- [Configuration](docs/configuration.md) — Configuration reference
+- [Error Handling](docs/errors.md) — Error codes and troubleshooting
+- [Technical Design](docs/engram.md) — Full architecture document
 
 ## License
 
-Copyright (c) Hyperengineering
+MIT License — see [LICENSE](LICENSE) for details.
