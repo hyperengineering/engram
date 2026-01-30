@@ -1,0 +1,16 @@
+# Dockerfile for GoReleaser - uses pre-built binary
+FROM gcr.io/distroless/static-debian12
+
+# Copy pre-built binary from GoReleaser context
+COPY engram /usr/local/bin/engram
+
+# Create data directory mount point
+VOLUME /data
+
+# Default port
+EXPOSE 8080
+
+# Run as non-root user (distroless provides nonroot user)
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/engram"]
