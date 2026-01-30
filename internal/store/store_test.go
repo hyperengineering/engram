@@ -61,6 +61,9 @@ func (m *mockStore) MarkEmbeddingFailed(ctx context.Context, id string) error {
 func (m *mockStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 	return nil, nil
 }
+func (m *mockStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStats, error) {
+	return nil, nil
+}
 func (m *mockStore) Close() error {
 	return nil
 }

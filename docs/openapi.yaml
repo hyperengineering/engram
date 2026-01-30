@@ -22,6 +22,8 @@ servers:
 tags:
   - name: Health
     description: Service health and status
+  - name: Monitoring
+    description: Extended system metrics and monitoring
   - name: Lore
     description: Lore ingestion and retrieval
   - name: Sync
@@ -50,6 +52,31 @@ paths:
                 embedding_model: "text-embedding-3-small"
                 lore_count: 1523
                 last_snapshot: "2026-01-29T14:30:00Z"
+
+  /stats:
+    get:
+      summary: Get extended system statistics
+      description: |
+        Returns comprehensive system metrics including lore counts, embedding pipeline health,
+        category distribution, and quality metrics. This endpoint is public (no authentication
+        required) to enable monitoring tool integration.
+      operationId: getStats
+      tags:
+        - Monitoring
+      security: []
+      responses:
+        '200':
+          description: Extended statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtendedStats'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /lore:
     post:
@@ -592,6 +619,121 @@ components:
           nullable: true
           description: Timestamp of last snapshot generation
           example: "2026-01-29T14:30:00Z"
+
+    ExtendedStats:
+      type: object
+      required:
+        - total_lore
+        - active_lore
+        - deleted_lore
+        - embedding_stats
+        - category_stats
+        - quality_stats
+        - unique_source_count
+        - stats_as_of
+      properties:
+        total_lore:
+          type: integer
+          format: int64
+          description: Total lore entries (including deleted)
+          example: 1523
+        active_lore:
+          type: integer
+          format: int64
+          description: Non-deleted lore entries
+          example: 1498
+        deleted_lore:
+          type: integer
+          format: int64
+          description: Soft-deleted lore entries
+          example: 25
+        embedding_stats:
+          $ref: '#/components/schemas/EmbeddingStats'
+        category_stats:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+          description: Count of active lore entries per category
+          example:
+            ARCHITECTURAL_DECISION: 234
+            PATTERN_OUTCOME: 312
+        quality_stats:
+          $ref: '#/components/schemas/QualityStats'
+        unique_source_count:
+          type: integer
+          format: int64
+          description: Number of distinct source IDs contributing lore
+          example: 12
+        last_snapshot:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last snapshot generation
+          example: "2026-01-30T14:30:00Z"
+        last_decay:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last confidence decay run
+          example: "2026-01-29T00:00:00Z"
+        stats_as_of:
+          type: string
+          format: date-time
+          description: Timestamp when these stats were computed
+          example: "2026-01-30T15:45:32Z"
+
+    EmbeddingStats:
+      type: object
+      required:
+        - complete
+        - pending
+        - failed
+      properties:
+        complete:
+          type: integer
+          format: int64
+          description: Entries with successfully generated embeddings
+          example: 1480
+        pending:
+          type: integer
+          format: int64
+          description: Entries awaiting embedding generation
+          example: 15
+        failed:
+          type: integer
+          format: int64
+          description: Entries where embedding generation failed
+          example: 3
+
+    QualityStats:
+      type: object
+      required:
+        - average_confidence
+        - validated_count
+        - high_confidence_count
+        - low_confidence_count
+      properties:
+        average_confidence:
+          type: number
+          format: double
+          description: Mean confidence across all active lore
+          example: 0.72
+        validated_count:
+          type: integer
+          format: int64
+          description: Entries that have received positive feedback
+          example: 823
+        high_confidence_count:
+          type: integer
+          format: int64
+          description: Entries with confidence >= 0.8
+          example: 456
+        low_confidence_count:
+          type: integer
+          format: int64
+          description: Entries with confidence < 0.3
+          example: 89
 
     # === Error Types (RFC 7807) ===
 

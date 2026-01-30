@@ -180,6 +180,55 @@ type StoreStats struct {
 	LastSnapshot *time.Time `json:"last_snapshot,omitempty"`
 }
 
+// ExtendedStats provides comprehensive system metrics for monitoring.
+type ExtendedStats struct {
+	// Lore counts
+	TotalLore   int64 `json:"total_lore"`
+	ActiveLore  int64 `json:"active_lore"`  // non-deleted
+	DeletedLore int64 `json:"deleted_lore"`
+
+	// Embedding pipeline health
+	EmbeddingStats EmbeddingStats `json:"embedding_stats"`
+
+	// Knowledge distribution
+	CategoryStats map[string]int64 `json:"category_stats"`
+
+	// Quality metrics
+	QualityStats QualityStats `json:"quality_stats"`
+
+	// Source metrics
+	UniqueSourceCount int64 `json:"unique_source_count"`
+
+	// Timestamps
+	LastSnapshot *time.Time `json:"last_snapshot,omitempty"`
+	LastDecay    *time.Time `json:"last_decay,omitempty"`
+	StatsAsOf    time.Time  `json:"stats_as_of"`
+}
+
+// EmbeddingStats tracks embedding pipeline health.
+type EmbeddingStats struct {
+	Complete int64 `json:"complete"`
+	Pending  int64 `json:"pending"`
+	Failed   int64 `json:"failed"`
+}
+
+// QualityStats tracks lore quality metrics.
+type QualityStats struct {
+	AverageConfidence   float64 `json:"average_confidence"`
+	ValidatedCount      int64   `json:"validated_count"`       // validation_count > 0
+	HighConfidenceCount int64   `json:"high_confidence_count"` // confidence >= 0.8
+	LowConfidenceCount  int64   `json:"low_confidence_count"`  // confidence < 0.3
+}
+
+// MarshalJSON ensures nil map in ExtendedStats marshals as {} not null.
+func (e ExtendedStats) MarshalJSON() ([]byte, error) {
+	if e.CategoryStats == nil {
+		e.CategoryStats = map[string]int64{}
+	}
+	type Alias ExtendedStats
+	return json.Marshal(Alias(e))
+}
+
 // SimilarEntry represents a lore entry with its similarity score.
 type SimilarEntry struct {
 	LoreEntry

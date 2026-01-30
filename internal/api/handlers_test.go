@@ -23,19 +23,21 @@ import (
 
 // mockStore implements store.Store interface for testing
 type mockStore struct {
-	stats          *types.StoreStats
-	statsErr       error
-	ingestErr      error
-	ingestResult   *types.IngestResult // Custom ingest result (for dedup testing)
-	ingestCalls    int
-	lastEntries    []types.NewLoreEntry
-	snapshotReader io.ReadCloser
-	snapshotErr    error
-	deltaResult    *types.DeltaResult
-	deltaErr       error
-	feedbackResult *types.FeedbackResult
-	feedbackErr    error
-	deleteErr      error
+	stats            *types.StoreStats
+	statsErr         error
+	extendedStats    *types.ExtendedStats
+	extendedStatsErr error
+	ingestErr        error
+	ingestResult     *types.IngestResult // Custom ingest result (for dedup testing)
+	ingestCalls      int
+	lastEntries      []types.NewLoreEntry
+	snapshotReader   io.ReadCloser
+	snapshotErr      error
+	deltaResult      *types.DeltaResult
+	deltaErr         error
+	feedbackResult   *types.FeedbackResult
+	feedbackErr      error
+	deleteErr        error
 }
 
 func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
@@ -117,6 +119,10 @@ func (m *mockStore) MarkEmbeddingFailed(ctx context.Context, id string) error {
 
 func (m *mockStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 	return m.stats, m.statsErr
+}
+
+func (m *mockStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStats, error) {
+	return m.extendedStats, m.extendedStatsErr
 }
 
 func (m *mockStore) Close() error {
@@ -379,6 +385,203 @@ func TestHealth_StoreErrorReturns500(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d for store error", w.Code, http.StatusInternalServerError)
+	}
+}
+
+// --- Stats Endpoint Tests ---
+
+func TestStats_ReturnsExtendedStats(t *testing.T) {
+	now := time.Now().UTC()
+	s := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:   100,
+			ActiveLore:  95,
+			DeletedLore: 5,
+			EmbeddingStats: types.EmbeddingStats{
+				Complete: 90,
+				Pending:  3,
+				Failed:   2,
+			},
+			CategoryStats: map[string]int64{
+				"PATTERN_OUTCOME":        50,
+				"ARCHITECTURAL_DECISION": 30,
+			},
+			QualityStats: types.QualityStats{
+				AverageConfidence:   0.72,
+				ValidatedCount:      40,
+				HighConfidenceCount: 25,
+				LowConfidenceCount:  10,
+			},
+			UniqueSourceCount: 5,
+			LastSnapshot:      &now,
+			StatsAsOf:         now,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.ExtendedStats
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.TotalLore != 100 {
+		t.Errorf("total_lore = %d, want 100", resp.TotalLore)
+	}
+	if resp.ActiveLore != 95 {
+		t.Errorf("active_lore = %d, want 95", resp.ActiveLore)
+	}
+	if resp.EmbeddingStats.Complete != 90 {
+		t.Errorf("embedding_stats.complete = %d, want 90", resp.EmbeddingStats.Complete)
+	}
+	if resp.QualityStats.AverageConfidence != 0.72 {
+		t.Errorf("quality_stats.average_confidence = %f, want 0.72", resp.QualityStats.AverageConfidence)
+	}
+}
+
+func TestStats_ReturnsCorrectJSONStructure(t *testing.T) {
+	now := time.Now().UTC()
+	s := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:         10,
+			ActiveLore:        10,
+			DeletedLore:       0,
+			EmbeddingStats:    types.EmbeddingStats{Complete: 10},
+			CategoryStats:     map[string]int64{"PATTERN_OUTCOME": 10},
+			QualityStats:      types.QualityStats{AverageConfidence: 0.5},
+			UniqueSourceCount: 1,
+			StatsAsOf:         now,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	handler.Stats(w, req)
+
+	// Parse as raw JSON to check field names
+	var rawResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Check all required fields are present with snake_case names
+	requiredFields := []string{
+		"total_lore", "active_lore", "deleted_lore",
+		"embedding_stats", "category_stats", "quality_stats",
+		"unique_source_count", "stats_as_of",
+	}
+	for _, field := range requiredFields {
+		if _, ok := rawResp[field]; !ok {
+			t.Errorf("missing required field: %s", field)
+		}
+	}
+}
+
+func TestStats_NoAuthRequired(t *testing.T) {
+	s := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			CategoryStats: map[string]int64{},
+			StatsAsOf:     time.Now().UTC(),
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "test-api-key", "1.0.0")
+
+	// Create request WITHOUT Authorization header
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	// Direct handler call (bypassing middleware) - endpoint should work
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (stats should not require auth)", w.Code, http.StatusOK)
+	}
+}
+
+func TestStats_ContentTypeJSON(t *testing.T) {
+	s := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			CategoryStats: map[string]int64{},
+			StatsAsOf:     time.Now().UTC(),
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	handler.Stats(w, req)
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", contentType)
+	}
+}
+
+func TestStats_StoreErrorReturns500(t *testing.T) {
+	s := &mockStore{
+		extendedStats:    nil,
+		extendedStatsErr: errors.New("database error"),
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d for store error", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestStats_EmptyCategoryStatsIsObject(t *testing.T) {
+	s := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			CategoryStats: map[string]int64{}, // Empty but not nil
+			StatsAsOf:     time.Now().UTC(),
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	handler.Stats(w, req)
+
+	// Parse raw JSON
+	var rawResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// category_stats should be {} not null
+	catStats, ok := rawResp["category_stats"]
+	if !ok {
+		t.Fatal("category_stats field missing")
+	}
+	catMap, ok := catStats.(map[string]any)
+	if !ok {
+		t.Errorf("category_stats should be an object, got %T", catStats)
+	}
+	if len(catMap) != 0 {
+		t.Errorf("category_stats should be empty object, got %v", catMap)
 	}
 }
 
@@ -2502,5 +2705,114 @@ func TestDeleteEndpoint_RoundTrip(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("deleted entry ID %s not found in delta.DeletedIDs", entryID)
+	}
+}
+
+// --- Stats Endpoint Integration Test ---
+
+func TestStatsEndpoint_RoundTrip(t *testing.T) {
+	// This test uses a real SQLiteStore to verify the full data flow
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+
+	// Create real store
+	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+
+	// Insert test data with varied characteristics
+	entries := []types.NewLoreEntry{
+		{Content: "First entry high confidence", Category: "PATTERN_OUTCOME", Confidence: 0.9, SourceID: "source-1"},
+		{Content: "Second entry low confidence", Category: "PATTERN_OUTCOME", Confidence: 0.2, SourceID: "source-1"},
+		{Content: "Third entry different category", Category: "ARCHITECTURAL_DECISION", Confidence: 0.5, SourceID: "source-2"},
+	}
+	_, err = sqliteStore.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create handler with real store
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(sqliteStore, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler)
+
+	// Make GET request WITHOUT auth (stats is public)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Parse response
+	var stats types.ExtendedStats
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Verify stats reflect inserted data
+	if stats.TotalLore != 3 {
+		t.Errorf("total_lore = %d, want 3", stats.TotalLore)
+	}
+	if stats.ActiveLore != 3 {
+		t.Errorf("active_lore = %d, want 3", stats.ActiveLore)
+	}
+	if stats.DeletedLore != 0 {
+		t.Errorf("deleted_lore = %d, want 0", stats.DeletedLore)
+	}
+
+	// Check category distribution
+	if stats.CategoryStats["PATTERN_OUTCOME"] != 2 {
+		t.Errorf("category_stats[PATTERN_OUTCOME] = %d, want 2", stats.CategoryStats["PATTERN_OUTCOME"])
+	}
+	if stats.CategoryStats["ARCHITECTURAL_DECISION"] != 1 {
+		t.Errorf("category_stats[ARCHITECTURAL_DECISION] = %d, want 1", stats.CategoryStats["ARCHITECTURAL_DECISION"])
+	}
+
+	// Check unique sources
+	if stats.UniqueSourceCount != 2 {
+		t.Errorf("unique_source_count = %d, want 2", stats.UniqueSourceCount)
+	}
+
+	// Check quality stats
+	if stats.QualityStats.HighConfidenceCount != 1 {
+		t.Errorf("high_confidence_count = %d, want 1 (only 0.9 >= 0.8)", stats.QualityStats.HighConfidenceCount)
+	}
+	if stats.QualityStats.LowConfidenceCount != 1 {
+		t.Errorf("low_confidence_count = %d, want 1 (only 0.2 < 0.3)", stats.QualityStats.LowConfidenceCount)
+	}
+
+	// Verify stats_as_of is set
+	if stats.StatsAsOf.IsZero() {
+		t.Error("stats_as_of should be set")
+	}
+}
+
+func TestStatsEndpoint_NoAuthRequired(t *testing.T) {
+	// Create a mock store
+	s := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			CategoryStats: map[string]int64{},
+			StatsAsOf:     time.Now().UTC(),
+		},
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, embedder, "secret-api-key", "1.0.0")
+	router := NewRouter(handler)
+
+	// Make GET request WITHOUT auth header
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Should succeed without auth
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (stats endpoint should be public)", w.Code, http.StatusOK)
 	}
 }

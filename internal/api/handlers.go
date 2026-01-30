@@ -68,6 +68,24 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// Stats returns extended system metrics for monitoring
+func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.store.GetExtendedStats(r.Context())
+	if err != nil {
+		slog.Error("stats retrieval failed",
+			"component", "api",
+			"action", "stats_failed",
+			"error", err,
+		)
+		WriteProblem(w, r, http.StatusInternalServerError,
+			"Internal error retrieving stats")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
 // IngestLore handles POST /api/v1/lore
 func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()

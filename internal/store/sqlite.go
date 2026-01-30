@@ -227,6 +227,91 @@ func (s *SQLiteStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 	}, nil
 }
 
+// lastDecay tracks when confidence decay last ran (package level for stats access)
+var lastDecay *time.Time
+
+// SetLastDecay updates the last decay timestamp (called by decay worker)
+func SetLastDecay(t time.Time) {
+	lastDecay = &t
+}
+
+// GetExtendedStats returns comprehensive system metrics for monitoring.
+func (s *SQLiteStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStats, error) {
+	stats := &types.ExtendedStats{
+		CategoryStats: make(map[string]int64),
+		StatsAsOf:     time.Now().UTC(),
+		LastSnapshot:  s.lastSnapshot,
+		LastDecay:     lastDecay,
+	}
+
+	// Main aggregates query (single pass for most metrics)
+	// Use COALESCE to handle empty table case (SUM returns NULL when no rows)
+	mainQuery := `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN deleted_at IS NULL AND embedding_status = 'complete' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN deleted_at IS NULL AND embedding_status = 'pending' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN deleted_at IS NULL AND embedding_status = 'failed' THEN 1 ELSE 0 END), 0),
+			COALESCE(AVG(CASE WHEN deleted_at IS NULL THEN confidence END), 0),
+			COALESCE(SUM(CASE WHEN deleted_at IS NULL AND validation_count > 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN deleted_at IS NULL AND confidence >= 0.8 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN deleted_at IS NULL AND confidence < 0.3 THEN 1 ELSE 0 END), 0),
+			COUNT(DISTINCT CASE WHEN deleted_at IS NULL THEN source_id END)
+		FROM lore_entries`
+
+	var avgConfidence sql.NullFloat64
+	err := s.db.QueryRowContext(ctx, mainQuery).Scan(
+		&stats.TotalLore,
+		&stats.ActiveLore,
+		&stats.DeletedLore,
+		&stats.EmbeddingStats.Complete,
+		&stats.EmbeddingStats.Pending,
+		&stats.EmbeddingStats.Failed,
+		&avgConfidence,
+		&stats.QualityStats.ValidatedCount,
+		&stats.QualityStats.HighConfidenceCount,
+		&stats.QualityStats.LowConfidenceCount,
+		&stats.UniqueSourceCount,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("main stats query: %w", err)
+	}
+
+	if avgConfidence.Valid {
+		stats.QualityStats.AverageConfidence = avgConfidence.Float64
+	}
+
+	// Category distribution query
+	catQuery := `
+		SELECT category, COUNT(*)
+		FROM lore_entries
+		WHERE deleted_at IS NULL
+		GROUP BY category`
+
+	rows, err := s.db.QueryContext(ctx, catQuery)
+	if err != nil {
+		return nil, fmt.Errorf("category stats query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var category string
+		var count int64
+		if err := rows.Scan(&category, &count); err != nil {
+			return nil, fmt.Errorf("scanning category row: %w", err)
+		}
+		stats.CategoryStats[category] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating category rows: %w", err)
+	}
+
+	return stats, nil
+}
+
 
 func packEmbedding(v []float32) []byte {
 	buf := make([]byte, len(v)*4)

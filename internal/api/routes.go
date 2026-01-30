@@ -24,6 +24,7 @@ func NewRouter(h *Handler) *chi.Mux {
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public routes (no auth required per NFR8)
 		r.Get("/health", h.Health)
+		r.Get("/stats", h.Stats)
 
 		// Protected routes (auth required)
 		r.Group(func(r chi.Router) {

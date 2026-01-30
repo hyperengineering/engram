@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hyperengineering/engram/internal/types"
+	"github.com/oklog/ulid/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -3809,4 +3810,364 @@ func TestDeleteLore_ConcurrentDeletes(t *testing.T) {
 	if notFoundCount != numGoroutines-1 {
 		t.Errorf("expected %d ErrNotFound, got %d", numGoroutines-1, notFoundCount)
 	}
+}
+
+// --- GetExtendedStats Tests ---
+
+func TestGetExtendedStats_EmptyDatabase(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// All counts should be 0
+	if stats.TotalLore != 0 {
+		t.Errorf("TotalLore = %d, want 0", stats.TotalLore)
+	}
+	if stats.ActiveLore != 0 {
+		t.Errorf("ActiveLore = %d, want 0", stats.ActiveLore)
+	}
+	if stats.DeletedLore != 0 {
+		t.Errorf("DeletedLore = %d, want 0", stats.DeletedLore)
+	}
+
+	// Embedding stats should be 0
+	if stats.EmbeddingStats.Complete != 0 {
+		t.Errorf("EmbeddingStats.Complete = %d, want 0", stats.EmbeddingStats.Complete)
+	}
+	if stats.EmbeddingStats.Pending != 0 {
+		t.Errorf("EmbeddingStats.Pending = %d, want 0", stats.EmbeddingStats.Pending)
+	}
+	if stats.EmbeddingStats.Failed != 0 {
+		t.Errorf("EmbeddingStats.Failed = %d, want 0", stats.EmbeddingStats.Failed)
+	}
+
+	// Category stats should be empty (not nil)
+	if stats.CategoryStats == nil {
+		t.Error("CategoryStats should not be nil")
+	}
+	if len(stats.CategoryStats) != 0 {
+		t.Errorf("CategoryStats should be empty, got %v", stats.CategoryStats)
+	}
+
+	// Quality stats
+	if stats.QualityStats.AverageConfidence != 0.0 {
+		t.Errorf("AverageConfidence = %f, want 0.0", stats.QualityStats.AverageConfidence)
+	}
+	if stats.QualityStats.ValidatedCount != 0 {
+		t.Errorf("ValidatedCount = %d, want 0", stats.QualityStats.ValidatedCount)
+	}
+
+	// Unique sources
+	if stats.UniqueSourceCount != 0 {
+		t.Errorf("UniqueSourceCount = %d, want 0", stats.UniqueSourceCount)
+	}
+
+	// StatsAsOf should be set
+	if stats.StatsAsOf.IsZero() {
+		t.Error("StatsAsOf should be set")
+	}
+}
+
+func TestGetExtendedStats_MixedEmbeddingStatus(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entries with different embedding statuses
+	// complete: 3, pending: 2, failed: 1
+	entries := []struct {
+		status string
+		count  int
+	}{
+		{"complete", 3},
+		{"pending", 2},
+		{"failed", 1},
+	}
+
+	for _, e := range entries {
+		for i := 0; i < e.count; i++ {
+			_, err := db.db.Exec(`
+				INSERT INTO lore_entries (id, content, category, confidence, embedding_status, source_id, sources, created_at, updated_at)
+				VALUES (?, ?, 'PATTERN_OUTCOME', 0.5, ?, 'test-source', '[]', datetime('now'), datetime('now'))
+			`, generateTestID(), "content", e.status)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.EmbeddingStats.Complete != 3 {
+		t.Errorf("EmbeddingStats.Complete = %d, want 3", stats.EmbeddingStats.Complete)
+	}
+	if stats.EmbeddingStats.Pending != 2 {
+		t.Errorf("EmbeddingStats.Pending = %d, want 2", stats.EmbeddingStats.Pending)
+	}
+	if stats.EmbeddingStats.Failed != 1 {
+		t.Errorf("EmbeddingStats.Failed = %d, want 1", stats.EmbeddingStats.Failed)
+	}
+}
+
+func TestGetExtendedStats_CategoryDistribution(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entries across different categories
+	categories := map[string]int{
+		"ARCHITECTURAL_DECISION":    3,
+		"PATTERN_OUTCOME":           5,
+		"EDGE_CASE_DISCOVERY":       2,
+		"IMPLEMENTATION_FRICTION":   4,
+	}
+
+	for category, count := range categories {
+		for i := 0; i < count; i++ {
+			_, err := db.db.Exec(`
+				INSERT INTO lore_entries (id, content, category, confidence, embedding_status, source_id, sources, created_at, updated_at)
+				VALUES (?, ?, ?, 0.5, 'complete', 'test-source', '[]', datetime('now'), datetime('now'))
+			`, generateTestID(), "content", category)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check category counts
+	for category, expectedCount := range categories {
+		if stats.CategoryStats[category] != int64(expectedCount) {
+			t.Errorf("CategoryStats[%s] = %d, want %d", category, stats.CategoryStats[category], expectedCount)
+		}
+	}
+
+	// Empty categories should not be present
+	if _, exists := stats.CategoryStats["TESTING_STRATEGY"]; exists {
+		t.Error("Empty category should not be in CategoryStats")
+	}
+}
+
+func TestGetExtendedStats_QualityMetrics(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entries with varying confidence and validation counts
+	testData := []struct {
+		confidence      float64
+		validationCount int
+	}{
+		{0.1, 0},  // low confidence, not validated
+		{0.5, 1},  // mid confidence, validated
+		{0.9, 2},  // high confidence, validated
+		{0.25, 0}, // low confidence (< 0.3), not validated
+		{0.85, 1}, // high confidence (>= 0.8), validated
+	}
+
+	for _, d := range testData {
+		_, err := db.db.Exec(`
+			INSERT INTO lore_entries (id, content, category, confidence, validation_count, embedding_status, source_id, sources, created_at, updated_at)
+			VALUES (?, ?, 'PATTERN_OUTCOME', ?, ?, 'complete', 'test-source', '[]', datetime('now'), datetime('now'))
+		`, generateTestID(), "content", d.confidence, d.validationCount)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Average confidence: (0.1 + 0.5 + 0.9 + 0.25 + 0.85) / 5 = 0.52
+	expectedAvg := 0.52
+	if math.Abs(stats.QualityStats.AverageConfidence-expectedAvg) > 0.001 {
+		t.Errorf("AverageConfidence = %f, want %f", stats.QualityStats.AverageConfidence, expectedAvg)
+	}
+
+	// Validated count: 3 entries have validation_count > 0
+	if stats.QualityStats.ValidatedCount != 3 {
+		t.Errorf("ValidatedCount = %d, want 3", stats.QualityStats.ValidatedCount)
+	}
+
+	// High confidence (>= 0.8): 0.9, 0.85 = 2
+	if stats.QualityStats.HighConfidenceCount != 2 {
+		t.Errorf("HighConfidenceCount = %d, want 2", stats.QualityStats.HighConfidenceCount)
+	}
+
+	// Low confidence (< 0.3): 0.1, 0.25 = 2
+	if stats.QualityStats.LowConfidenceCount != 2 {
+		t.Errorf("LowConfidenceCount = %d, want 2", stats.QualityStats.LowConfidenceCount)
+	}
+}
+
+func TestGetExtendedStats_UniqueSourceCount(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entries from different sources
+	sources := []string{"source-1", "source-2", "source-3", "source-1", "source-2"} // 3 unique
+
+	for _, source := range sources {
+		_, err := db.db.Exec(`
+			INSERT INTO lore_entries (id, content, category, confidence, embedding_status, source_id, sources, created_at, updated_at)
+			VALUES (?, ?, 'PATTERN_OUTCOME', 0.5, 'complete', ?, '[]', datetime('now'), datetime('now'))
+		`, generateTestID(), "content", source)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.UniqueSourceCount != 3 {
+		t.Errorf("UniqueSourceCount = %d, want 3", stats.UniqueSourceCount)
+	}
+}
+
+func TestGetExtendedStats_ExcludesDeletedFromActive(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert 5 entries
+	for i := 0; i < 5; i++ {
+		_, err := db.db.Exec(`
+			INSERT INTO lore_entries (id, content, category, confidence, embedding_status, source_id, sources, created_at, updated_at)
+			VALUES (?, ?, 'PATTERN_OUTCOME', 0.5, 'complete', 'test-source', '[]', datetime('now'), datetime('now'))
+		`, generateTestID(), "content")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Soft-delete 2 entries
+	_, err = db.db.Exec(`
+		UPDATE lore_entries
+		SET deleted_at = datetime('now')
+		WHERE id IN (SELECT id FROM lore_entries LIMIT 2)
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.TotalLore != 5 {
+		t.Errorf("TotalLore = %d, want 5", stats.TotalLore)
+	}
+	if stats.ActiveLore != 3 {
+		t.Errorf("ActiveLore = %d, want 3", stats.ActiveLore)
+	}
+	if stats.DeletedLore != 2 {
+		t.Errorf("DeletedLore = %d, want 2", stats.DeletedLore)
+	}
+
+	// Embedding stats should only count active
+	if stats.EmbeddingStats.Complete != 3 {
+		t.Errorf("EmbeddingStats.Complete = %d, want 3 (active only)", stats.EmbeddingStats.Complete)
+	}
+}
+
+func TestGetExtendedStats_DeletedExcludedFromCategoryStats(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert entries in a category
+	for i := 0; i < 3; i++ {
+		_, err := db.db.Exec(`
+			INSERT INTO lore_entries (id, content, category, confidence, embedding_status, source_id, sources, created_at, updated_at)
+			VALUES (?, ?, 'PATTERN_OUTCOME', 0.5, 'complete', 'test-source', '[]', datetime('now'), datetime('now'))
+		`, generateTestID(), "content")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Soft-delete 1 entry
+	_, err = db.db.Exec(`
+		UPDATE lore_entries
+		SET deleted_at = datetime('now')
+		WHERE id IN (SELECT id FROM lore_entries LIMIT 1)
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Category count should only include active entries
+	if stats.CategoryStats["PATTERN_OUTCOME"] != 2 {
+		t.Errorf("CategoryStats[PATTERN_OUTCOME] = %d, want 2 (active only)", stats.CategoryStats["PATTERN_OUTCOME"])
+	}
+}
+
+func TestGetExtendedStats_IncludesTimestamps(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Set lastSnapshot to test it's included
+	now := time.Now().UTC()
+	db.lastSnapshot = &now
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.LastSnapshot == nil {
+		t.Error("LastSnapshot should be set")
+	}
+
+	// StatsAsOf should be recent
+	if time.Since(stats.StatsAsOf) > time.Second {
+		t.Error("StatsAsOf should be recent")
+	}
+}
+
+// Helper function to generate test IDs using ULID format
+func generateTestID() string {
+	// Use ulid.Make() for proper ULID generation
+	return ulid.Make().String()
 }

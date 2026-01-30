@@ -26,5 +26,6 @@ type Store interface {
 	UpdateEmbedding(ctx context.Context, id string, embedding []float32) error
 	MarkEmbeddingFailed(ctx context.Context, id string) error
 	GetStats(ctx context.Context) (*types.StoreStats, error)
+	GetExtendedStats(ctx context.Context) (*types.ExtendedStats, error)
 	Close() error
 }
