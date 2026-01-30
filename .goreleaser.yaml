@@ -104,21 +104,21 @@ docker_manifests:
       - "ghcr.io/hyperengineering/engram:{{ .Tag }}-amd64"
       - "ghcr.io/hyperengineering/engram:{{ .Tag }}-arm64"
 
-# Homebrew tap (disabled - requires separate repo and token)
-# brews:
-#   - name: engram
-#     repository:
-#       owner: hyperengineering
-#       name: homebrew-tap
-#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-#     directory: Formula
-#     homepage: "https://github.com/hyperengineering/engram"
-#     description: "Centralized lore persistence and synchronization service"
-#     license: "MIT"
-#     install: |
-#       bin.install "engram"
-#     test: |
-#       system "#{bin}/engram", "version"
+# Homebrew tap
+brews:
+  - name: engram
+    repository:
+      owner: hyperengineering
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/hyperengineering/engram"
+    description: "Centralized lore persistence and synchronization service"
+    license: "MIT"
+    install: |
+      bin.install "engram"
+    test: |
+      system "#{bin}/engram", "version"
 
 # System packages (deb/rpm)
 nfpms:
