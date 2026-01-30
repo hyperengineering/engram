@@ -1,7 +1,7 @@
 # Build output
 dist/
 bin/
-engram
+/engram
 
 # Database files
 data/
