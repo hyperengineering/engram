@@ -124,6 +124,12 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// For in-memory databases, limit to single connection to ensure all
+	// operations see the same database (each :memory: connection gets its own DB)
+	if dbPath == ":memory:" {
+		db.SetMaxOpenConns(1)
+	}
+
 	// Enable pragmas for performance and safety
 	if err := enablePragmas(db); err != nil {
 		db.Close()
