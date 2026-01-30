@@ -29,4 +29,24 @@ echo "Installing GitHub CLI..."
   && sudo apt update \
   && sudo apt install gh -y
 
+# Install Engram from release
+echo "Installing Engram..."
+ENGRAM_VERSION="1.0.0"
+curl -fsSL "https://github.com/hyperengineering/engram/releases/download/v${ENGRAM_VERSION}/engram_linux_amd64.tar.gz" | tar -xzf - -C /tmp engram
+sudo mv /tmp/engram /usr/bin/engram
+sudo chmod +x /usr/bin/engram
+
+# Create engram user and directories (mirrors deb/rpm package setup)
+sudo groupadd --system engram 2>/dev/null || true
+sudo useradd --system --gid engram --home-dir /var/lib/engram --shell /usr/sbin/nologin engram 2>/dev/null || true
+sudo mkdir -p /etc/engram /var/lib/engram
+sudo cp /workspaces/engram/packaging/engram.yaml /etc/engram/
+sudo cp /workspaces/engram/packaging/environment /etc/engram/
+sudo chown -R engram:engram /var/lib/engram
+sudo chmod 750 /var/lib/engram
+sudo chmod 640 /etc/engram/environment
+sudo chown root:engram /etc/engram/environment
+
+echo "Engram $(engram version) installed. Configure API keys in /etc/engram/environment"
+
 echo "=== Setup complete ==="

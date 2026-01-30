@@ -4,17 +4,17 @@
 
 # Required: API key for authenticating clients
 # Generate a secure random key: openssl rand -hex 32
-ENGRAM_API_KEY=
+export ENGRAM_API_KEY=
 
 # Required: OpenAI API key for embedding generation
 # Get your key from: https://platform.openai.com/api-keys
-OPENAI_API_KEY=
+export OPENAI_API_KEY=
 
 # Configuration file path (set by default for system packages)
-ENGRAM_CONFIG_PATH=/etc/engram/engram.yaml
+export ENGRAM_CONFIG_PATH=/etc/engram/engram.yaml
 
 # Optional: Override log level (debug, info, warn, error)
-# ENGRAM_LOG_LEVEL=info
+# export ENGRAM_LOG_LEVEL=info
 
 # Optional: Override log format (json, text)
-# ENGRAM_LOG_FORMAT=json
+# export ENGRAM_LOG_FORMAT=json
