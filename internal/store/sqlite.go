@@ -424,6 +424,35 @@ func (s *SQLiteStore) GetLore(ctx context.Context, id string) (*types.LoreEntry,
 	return entry, nil
 }
 
+// DeleteLore soft-deletes a lore entry by setting deleted_at.
+// Returns ErrNotFound if the entry doesn't exist or is already deleted.
+func (s *SQLiteStore) DeleteLore(ctx context.Context, id string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE lore_entries
+		SET deleted_at = ?, updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, now, now, id)
+	if err != nil {
+		return fmt.Errorf("soft delete lore: %w", err)
+	}
+
+	// NOTE: RowsAffected() error is practically unreachable with SQLite/modernc driver.
+	// This error path exists only for interface compliance and would require a buggy
+	// driver to trigger. Intentionally untested - accepted as defensive code.
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
 // GetPendingEmbeddings retrieves entries that need embedding generation.
 func (s *SQLiteStore) GetPendingEmbeddings(ctx context.Context, limit int) ([]types.LoreEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `

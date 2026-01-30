@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/hyperengineering/engram/internal/embedding"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/types"
@@ -89,7 +90,7 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	var accepted int
+	var accepted, merged int
 	if len(validEntries) > 0 {
 		result, err := h.store.IngestLore(r.Context(), validEntries)
 		if err != nil {
@@ -98,11 +99,12 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		accepted = result.Accepted
+		merged = result.Merged
 	}
 
 	resp := types.IngestResult{
 		Accepted: accepted,
-		Merged:   0,
+		Merged:   merged,
 		Rejected: len(req.Lore) - len(validEntries),
 		Errors:   allErrors,
 	}
@@ -275,4 +277,46 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// DeleteLore handles DELETE /api/v1/lore/{id}
+func (h *Handler) DeleteLore(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	// Validate ULID format using shared validation (consistent with Feedback handler)
+	if err := validation.ValidateULID("id", id); err != nil {
+		WriteProblem(w, r, http.StatusBadRequest,
+			"Invalid lore ID format: must be valid ULID")
+		return
+	}
+
+	err := h.store.DeleteLore(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Generic message - don't echo user-supplied ID (Issue #3)
+			WriteProblem(w, r, http.StatusNotFound,
+				"Lore entry not found")
+			return
+		}
+		slog.Error("delete lore failed",
+			"error", err,
+			"id", id,
+			"request_id", GetRequestID(r.Context()),
+			"remote_addr", r.RemoteAddr,
+		)
+		WriteProblem(w, r, http.StatusInternalServerError,
+			"Internal Server Error")
+		return
+	}
+
+	// Audit log with client identification (Issue #1)
+	slog.Info("lore deleted",
+		"component", "api",
+		"action", "delete_lore",
+		"id", id,
+		"request_id", GetRequestID(r.Context()),
+		"remote_addr", r.RemoteAddr,
+	)
+
+	w.WriteHeader(http.StatusNoContent)
 }

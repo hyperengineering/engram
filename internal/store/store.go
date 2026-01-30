@@ -14,6 +14,7 @@ type Store interface {
 	FindSimilar(ctx context.Context, embedding []float32, category string, threshold float64) ([]types.SimilarEntry, error)
 	MergeLore(ctx context.Context, targetID string, source types.NewLoreEntry) error
 	GetLore(ctx context.Context, id string) (*types.LoreEntry, error)
+	DeleteLore(ctx context.Context, id string) error
 	GetMetadata(ctx context.Context) (*types.StoreMetadata, error)
 	GetSnapshot(ctx context.Context) (io.ReadCloser, error)
 	GetDelta(ctx context.Context, since time.Time) (*types.DeltaResult, error)

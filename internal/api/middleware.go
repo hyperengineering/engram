@@ -46,6 +46,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -167,4 +168,67 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// DeleteRateLimiter provides rate limiting for DELETE operations.
+// Uses a simple token bucket algorithm with configurable rate.
+type DeleteRateLimiter struct {
+	tokens     int
+	maxTokens  int
+	refillRate time.Duration
+	lastRefill time.Time
+	mu         sync.Mutex
+}
+
+// NewDeleteRateLimiter creates a rate limiter allowing maxTokens deletes,
+// refilling one token per refillRate duration.
+func NewDeleteRateLimiter(maxTokens int, refillRate time.Duration) *DeleteRateLimiter {
+	return &DeleteRateLimiter{
+		tokens:     maxTokens,
+		maxTokens:  maxTokens,
+		refillRate: refillRate,
+		lastRefill: time.Now(),
+	}
+}
+
+// Middleware returns an HTTP middleware that rate-limits requests.
+// Returns 429 Too Many Requests when rate limit is exceeded.
+func (rl *DeleteRateLimiter) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !rl.Allow() {
+			slog.Warn("rate limit exceeded",
+				"path", r.URL.Path,
+				"method", r.Method,
+				"remote_addr", r.RemoteAddr,
+				"request_id", GetRequestID(r.Context()),
+			)
+			w.Header().Set("Retry-After", "1")
+			WriteProblem(w, r, http.StatusTooManyRequests,
+				"Rate limit exceeded. Please retry after the indicated interval.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Allow checks if a request is allowed under the rate limit.
+func (rl *DeleteRateLimiter) Allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	// Refill tokens based on elapsed time
+	now := time.Now()
+	elapsed := now.Sub(rl.lastRefill)
+	tokensToAdd := int(elapsed / rl.refillRate)
+	if tokensToAdd > 0 {
+		rl.tokens = min(rl.tokens+tokensToAdd, rl.maxTokens)
+		rl.lastRefill = now
+	}
+
+	// Check if we have tokens available
+	if rl.tokens > 0 {
+		rl.tokens--
+		return true
+	}
+	return false
 }

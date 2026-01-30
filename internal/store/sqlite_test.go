@@ -3459,3 +3459,354 @@ func TestDecayConfidence_EmptyStore(t *testing.T) {
 		t.Errorf("affected = %d, want 0 (empty store)", affected)
 	}
 }
+
+// --- DeleteLore Tests (Story 6.4) ---
+
+func TestDeleteLore_Success(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert an entry first
+	entry := types.NewLoreEntry{
+		Content:    "Test content for deletion",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-123",
+	}
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the entry
+	err = db.DeleteLore(context.Background(), id)
+	if err != nil {
+		t.Fatalf("DeleteLore failed: %v", err)
+	}
+
+	// Verify deleted_at is set
+	var deletedAt sql.NullString
+	err = db.db.QueryRow("SELECT deleted_at FROM lore_entries WHERE id = ?", id).Scan(&deletedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deletedAt.Valid {
+		t.Error("deleted_at should be set after deletion")
+	}
+}
+
+func TestDeleteLore_NotFound(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Try to delete non-existent entry
+	err = db.DeleteLore(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestDeleteLore_AlreadyDeleted(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert an entry
+	entry := types.NewLoreEntry{
+		Content:    "Test content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-123",
+	}
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete first time - should succeed
+	err = db.DeleteLore(context.Background(), id)
+	if err != nil {
+		t.Fatalf("First delete failed: %v", err)
+	}
+
+	// Delete second time - should return ErrNotFound
+	err = db.DeleteLore(context.Background(), id)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("second delete: expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestDeleteLore_UpdatesTimestamp(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert an entry with a backdated updated_at to ensure detectable change
+	id := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	oldTime := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	_, err = db.db.Exec(`
+		INSERT INTO lore_entries (id, content, context, category, confidence, embedding_status, source_id, sources, validation_count, created_at, updated_at)
+		VALUES (?, 'Test content', '', 'PATTERN_OUTCOME', 0.8, 'pending', 'source-123', '[]', 0, ?, ?)
+	`, id, oldTime, oldTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the entry
+	err = db.DeleteLore(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify both deleted_at and updated_at are set
+	var deletedAt, updatedAt string
+	err = db.db.QueryRow("SELECT deleted_at, updated_at FROM lore_entries WHERE id = ?", id).Scan(&deletedAt, &updatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if deletedAt == "" {
+		t.Error("deleted_at should be set")
+	}
+	if updatedAt == oldTime {
+		t.Error("updated_at should be updated after deletion")
+	}
+	if deletedAt != updatedAt {
+		t.Errorf("deleted_at (%s) and updated_at (%s) should match", deletedAt, updatedAt)
+	}
+}
+
+func TestDeleteLore_ExcludedFromGetLore(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert an entry
+	entry := types.NewLoreEntry{
+		Content:    "Test content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-123",
+	}
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify GetLore works before deletion
+	_, err = db.GetLore(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetLore before delete failed: %v", err)
+	}
+
+	// Delete the entry
+	err = db.DeleteLore(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify GetLore returns ErrNotFound after deletion
+	_, err = db.GetLore(context.Background(), id)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetLore after delete: expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestDeleteLore_AppearsInDelta(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Record timestamp T1
+	t1 := time.Now().UTC().Add(-1 * time.Second)
+
+	// Insert an entry
+	entry := types.NewLoreEntry{
+		Content:    "Test content for delta",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-123",
+	}
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the entry
+	err = db.DeleteLore(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get delta since T1
+	delta, err := db.GetDelta(context.Background(), t1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the ID appears in deleted_ids
+	found := false
+	for _, deletedID := range delta.DeletedIDs {
+		if deletedID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("deleted ID %s not found in delta.DeletedIDs: %v", id, delta.DeletedIDs)
+	}
+}
+
+func TestDeleteLore_RespectsCancellation(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert an entry
+	entry := types.NewLoreEntry{
+		Content:    "Test content",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-123",
+	}
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an already-cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Delete with cancelled context should fail
+	err = db.DeleteLore(ctx, id)
+	if err == nil {
+		t.Error("expected error with cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		// SQLite may wrap the error differently, just ensure it failed
+		t.Logf("delete with cancelled context returned: %v (acceptable)", err)
+	}
+
+	// Verify entry was NOT deleted (still exists)
+	_, err = db.GetLore(context.Background(), id)
+	if err != nil {
+		t.Errorf("entry should still exist after cancelled delete, got: %v", err)
+	}
+}
+
+func TestDeleteLore_ConcurrentDeletes(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert an entry
+	entry := types.NewLoreEntry{
+		Content:    "Test content for concurrent delete",
+		Category:   "PATTERN_OUTCOME",
+		Confidence: 0.8,
+		SourceID:   "source-123",
+	}
+	_, err = db.IngestLore(context.Background(), []types.NewLoreEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the ID
+	var id string
+	err = db.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run concurrent deletes
+	const numGoroutines = 10
+	results := make(chan error, numGoroutines)
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			results <- db.DeleteLore(context.Background(), id)
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	// Count successes and not-found errors
+	successCount := 0
+	notFoundCount := 0
+	for err := range results {
+		if err == nil {
+			successCount++
+		} else if errors.Is(err, ErrNotFound) {
+			notFoundCount++
+		} else {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+
+	// Exactly one should succeed, rest should get ErrNotFound
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 success, got %d", successCount)
+	}
+	if notFoundCount != numGoroutines-1 {
+		t.Errorf("expected %d ErrNotFound, got %d", numGoroutines-1, notFoundCount)
+	}
+}

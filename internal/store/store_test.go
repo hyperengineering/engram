@@ -25,6 +25,9 @@ func (m *mockStore) MergeLore(ctx context.Context, targetID string, source types
 func (m *mockStore) GetLore(ctx context.Context, id string) (*types.LoreEntry, error) {
 	return nil, nil
 }
+func (m *mockStore) DeleteLore(ctx context.Context, id string) error {
+	return nil
+}
 func (m *mockStore) GetMetadata(ctx context.Context) (*types.StoreMetadata, error) {
 	return nil, nil
 }

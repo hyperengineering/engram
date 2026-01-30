@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/types"
 )
@@ -23,6 +24,7 @@ type mockStore struct {
 	stats          *types.StoreStats
 	statsErr       error
 	ingestErr      error
+	ingestResult   *types.IngestResult // Custom ingest result (for dedup testing)
 	ingestCalls    int
 	lastEntries    []types.NewLoreEntry
 	snapshotReader io.ReadCloser
@@ -31,6 +33,7 @@ type mockStore struct {
 	deltaErr       error
 	feedbackResult *types.FeedbackResult
 	feedbackErr    error
+	deleteErr      error
 }
 
 func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry) (*types.IngestResult, error) {
@@ -38,6 +41,9 @@ func (m *mockStore) IngestLore(ctx context.Context, entries []types.NewLoreEntry
 	m.lastEntries = entries
 	if m.ingestErr != nil {
 		return nil, m.ingestErr
+	}
+	if m.ingestResult != nil {
+		return m.ingestResult, nil
 	}
 	return &types.IngestResult{Accepted: len(entries)}, nil
 }
@@ -52,6 +58,13 @@ func (m *mockStore) MergeLore(ctx context.Context, targetID string, source types
 
 func (m *mockStore) GetLore(ctx context.Context, id string) (*types.LoreEntry, error) {
 	return nil, store.ErrNotFound
+}
+
+func (m *mockStore) DeleteLore(ctx context.Context, id string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	return nil
 }
 
 func (m *mockStore) GetMetadata(ctx context.Context) (*types.StoreMetadata, error) {
@@ -870,6 +883,58 @@ func TestIngestLore_ContextTooLong(t *testing.T) {
 	}
 	if !hasContextError {
 		t.Errorf("expected context length error, got: %v", resp.Errors)
+	}
+}
+
+// TestIngestLore_MergedCountFromStore tests BUG-001 fix:
+// Verifies that when the store returns merged entries, the API response
+// correctly reflects that count instead of hardcoding 0.
+func TestIngestLore_MergedCountFromStore(t *testing.T) {
+	// Mock store returns a result where 1 entry was accepted and 1 was merged
+	// (simulating deduplication scenario)
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		ingestResult: &types.IngestResult{
+			Accepted: 1,
+			Merged:   1,
+			Rejected: 0,
+			Errors:   []string{},
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	// Send 2 valid entries - store will report 1 accepted, 1 merged
+	body := `{
+		"source_id": "devcontainer-abc123",
+		"lore": [
+			{"content": "First insight about Go patterns", "category": "PATTERN_OUTCOME", "confidence": 0.8},
+			{"content": "Similar insight about Go patterns", "category": "PATTERN_OUTCOME", "confidence": 0.7}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.IngestLore(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.IngestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// BUG-001: This assertion will FAIL with current code (hardcoded 0)
+	if resp.Merged != 1 {
+		t.Errorf("merged = %d, want 1 (BUG-001: handler must use result.Merged from store)", resp.Merged)
+	}
+
+	if resp.Accepted != 1 {
+		t.Errorf("accepted = %d, want 1", resp.Accepted)
 	}
 }
 
@@ -1793,5 +1858,259 @@ func TestFlushDuringGracefulShutdown_FeedbackCompletes(t *testing.T) {
 			t.Errorf("Server error: %v", err)
 		}
 	default:
+	}
+}
+
+// --- DeleteLore Endpoint Tests (Story 6.4) ---
+//
+// NOTE: Unit tests (TestDeleteLore_Success, TestDeleteLore_NotFound, etc.) call the handler
+// directly using withChiURLParam to inject URL parameters, intentionally bypassing the router
+// and auth middleware. This isolates handler logic testing from routing/middleware concerns.
+//
+// Integration tests (TestDeleteEndpoint_RoundTrip, TestDeleteLore_Unauthorized) use the full
+// router to verify end-to-end behavior including route registration and auth middleware.
+
+// withChiURLParam adds a chi URL param to the request context
+func withChiURLParam(r *http.Request, key, value string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(key, value)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+func TestDeleteLore_Success(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+	req = withChiURLParam(req, "id", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	w := httptest.NewRecorder()
+
+	handler.DeleteLore(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+
+	// 204 should have no response body
+	if w.Body.Len() != 0 {
+		t.Errorf("body length = %d, want 0 for 204 No Content", w.Body.Len())
+	}
+}
+
+func TestDeleteLore_NotFound(t *testing.T) {
+	s := &mockStore{
+		stats:     &types.StoreStats{},
+		deleteErr: store.ErrNotFound,
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+	req = withChiURLParam(req, "id", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	w := httptest.NewRecorder()
+
+	handler.DeleteLore(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+
+	var problem Problem
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	if problem.Status != http.StatusNotFound {
+		t.Errorf("problem.status = %d, want %d", problem.Status, http.StatusNotFound)
+	}
+}
+
+func TestDeleteLore_InvalidULID(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/invalid-id", nil)
+	req = withChiURLParam(req, "id", "invalid-id")
+	w := httptest.NewRecorder()
+
+	handler.DeleteLore(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+
+	var problem Problem
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("failed to unmarshal problem: %v", err)
+	}
+
+	if !strings.Contains(problem.Detail, "ULID") {
+		t.Errorf("problem.Detail should mention ULID, got: %q", problem.Detail)
+	}
+}
+
+func TestDeleteLore_StoreError(t *testing.T) {
+	s := &mockStore{
+		stats:     &types.StoreStats{},
+		deleteErr: errors.New("database connection failed"),
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+	req = withChiURLParam(req, "id", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	w := httptest.NewRecorder()
+
+	handler.DeleteLore(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+func TestDeleteLore_Unauthorized(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := NewHandler(s, embedder, "secret-api-key", "1.0.0")
+	router := NewRouter(handler)
+
+	// Request WITHOUT Authorization header
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// --- Delete Integration Test (Story 6.4) ---
+
+func TestDeleteLore_RateLimited(t *testing.T) {
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := NewHandler(s, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler)
+
+	// Make many rapid requests to trigger rate limiting
+	// The rate limiter allows 100 burst, so we need >100 to trigger
+	var rateLimitedCount int
+	for i := 0; i < 110; i++ {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+		req.Header.Set("Authorization", "Bearer test-api-key")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code == http.StatusTooManyRequests {
+			rateLimitedCount++
+		}
+	}
+
+	// Should have hit rate limit after 100 requests
+	if rateLimitedCount == 0 {
+		t.Error("expected some requests to be rate limited")
+	}
+
+	// Verify rate limited response has Retry-After header
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code == http.StatusTooManyRequests {
+		retryAfter := w.Header().Get("Retry-After")
+		if retryAfter == "" {
+			t.Error("rate limited response should have Retry-After header")
+		}
+	}
+}
+
+func TestDeleteEndpoint_RoundTrip(t *testing.T) {
+	// This test uses a real SQLiteStore to verify the full data flow
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/engram.db"
+
+	// Create real store
+	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+
+	// Insert test data
+	entries := []types.NewLoreEntry{
+		{Content: "Delete integration test entry", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "test-src"},
+	}
+	_, err = sqliteStore.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the entry ID
+	entry, err := sqliteStore.GetDelta(context.Background(), time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entry.Lore) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entry.Lore))
+	}
+	entryID := entry.Lore[0].ID
+
+	// Create handler with real store
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(sqliteStore, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler)
+
+	// Make DELETE request
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/"+entryID, nil)
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Verify response
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+
+	// Verify entry is soft-deleted (not retrievable via GetLore)
+	_, err = sqliteStore.GetLore(context.Background(), entryID)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetLore after delete: expected ErrNotFound, got: %v", err)
+	}
+
+	// Verify entry appears in delta deleted_ids
+	delta, err := sqliteStore.GetDelta(context.Background(), time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, id := range delta.DeletedIDs {
+		if id == entryID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("deleted entry ID %s not found in delta.DeletedIDs", entryID)
 	}
 }
