@@ -19,13 +19,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is set at build time via ldflags: -ldflags "-X main.Version=1.0.0"
-var Version = "dev"
+// Version information set at build time via ldflags:
+//
+//	-X main.Version=1.0.0
+//	-X main.Commit=abc1234
+//	-X main.Date=2026-01-30T12:00:00Z
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "engram",
 	Short: "Engram - Central Lore Service",
 	RunE:  run,
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("engram %s (commit: %s, built: %s)\n", Version, Commit, Date)
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(versionCmd)
 }
 
 func run(cmd *cobra.Command, args []string) error {

@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+dist/
+bin/
+engram
+
+# Data and logs
+data/
+*.db
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+*_test.go
+testdata/
+
+# CI/CD
+.github/
+
+# Development
+.devcontainer/
+.claude/
+.opencode/
+tmp/
+
+# Fly.io
+fly.toml
+
+# BMAD
+_bmad/
+_bmad-output/
+
+# GoReleaser
+.goreleaser.yaml

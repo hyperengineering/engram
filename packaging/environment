@@ -1,0 +1,20 @@
+# Engram Environment Variables
+# This file contains sensitive configuration that should not be in the main config file.
+# Permissions: root:engram 640 (set by postinstall script)
+
+# Required: API key for authenticating clients
+# Generate a secure random key: openssl rand -hex 32
+ENGRAM_API_KEY=
+
+# Required: OpenAI API key for embedding generation
+# Get your key from: https://platform.openai.com/api-keys
+OPENAI_API_KEY=
+
+# Configuration file path (set by default for system packages)
+ENGRAM_CONFIG_PATH=/etc/engram/engram.yaml
+
+# Optional: Override log level (debug, info, warn, error)
+# ENGRAM_LOG_LEVEL=info
+
+# Optional: Override log format (json, text)
+# ENGRAM_LOG_FORMAT=json

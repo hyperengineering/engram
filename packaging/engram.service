@@ -1,0 +1,43 @@
+[Unit]
+Description=Engram Lore Persistence Service
+Documentation=https://github.com/hyperengineering/engram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=engram
+Group=engram
+EnvironmentFile=/etc/engram/environment
+ExecStart=/usr/bin/engram
+WorkingDirectory=/var/lib/engram
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/engram
+PrivateTmp=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+PrivateDevices=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+# Resource limits
+MemoryMax=512M
+TasksMax=100
+
+[Install]
+WantedBy=multi-user.target
