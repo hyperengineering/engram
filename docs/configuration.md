@@ -410,22 +410,19 @@ Duration values support Go duration strings:
 - `24h` — 24 hours
 - `1h30m` — 1 hour 30 minutes
 
-## Fly.io Deployment
+## Docker Deployment
 
-When deploying to Fly.io, configuration is set in `fly.toml`:
-
-```toml
-[env]
-  ENGRAM_PORT = "8080"
-  ENGRAM_DB_PATH = "/data/lore.db"
-  ENGRAM_EMBEDDING_MODEL = "text-embedding-3-small"
-  ENGRAM_LOG_LEVEL = "info"
-  ENGRAM_LOG_FORMAT = "json"
-```
-
-Secrets are set via CLI:
+When deploying with Docker, pass configuration via environment variables:
 
 ```bash
-fly secrets set OPENAI_API_KEY="sk-..."
-fly secrets set ENGRAM_API_KEY="your-secret-key"
+docker run -p 8080:8080 \
+  -e ENGRAM_DB_PATH="/data/lore.db" \
+  -e ENGRAM_LOG_LEVEL="info" \
+  -e ENGRAM_LOG_FORMAT="json" \
+  -e OPENAI_API_KEY="sk-..." \
+  -e ENGRAM_API_KEY="your-secret-key" \
+  -v engram_data:/data \
+  engram
 ```
+
+For production deployments, use your platform's secret management for API keys.

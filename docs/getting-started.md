@@ -6,7 +6,6 @@ Get from zero to a running Engram instance in under 10 minutes.
 
 - **Go 1.23 or later** — [Download Go](https://go.dev/dl/)
 - **OpenAI API key** — Required for embedding generation. [Get an API key](https://platform.openai.com/api-keys)
-- **(Optional) Fly.io CLI** — For cloud deployment. [Install flyctl](https://fly.io/docs/hands-on/install-flyctl/)
 
 ## Quick Start
 
@@ -59,38 +58,28 @@ Get from zero to a running Engram instance in under 10 minutes.
    }
    ```
 
-### Option 2: Deploy to Fly.io
+### Option 2: Run with Docker
 
-1. **Install Fly.io CLI and authenticate**
+1. **Build the Docker image**
 
    ```bash
-   fly auth login
+   docker build -t engram .
    ```
 
-2. **Create the app and volume**
+2. **Run the container**
 
    ```bash
-   fly apps create engram
-   fly volumes create engram_data --size 1 --region ord
+   docker run -p 8080:8080 \
+     -e OPENAI_API_KEY="sk-your-openai-api-key" \
+     -e ENGRAM_API_KEY="your-secret-api-key" \
+     -v engram_data:/data \
+     engram
    ```
 
-3. **Set secrets**
+3. **Verify**
 
    ```bash
-   fly secrets set OPENAI_API_KEY="sk-your-openai-api-key"
-   fly secrets set ENGRAM_API_KEY="your-secret-api-key"
-   ```
-
-4. **Deploy**
-
-   ```bash
-   fly deploy
-   ```
-
-5. **Verify deployment**
-
-   ```bash
-   curl https://engram.fly.dev/api/v1/health
+   curl http://localhost:8080/api/v1/health
    ```
 
 ## First Run Verification

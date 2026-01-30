@@ -31,7 +31,7 @@ This document defines end-to-end test scenarios for validating Engram integratio
 
 ### Prerequisites
 
-- Engram service running (production at fly.dev or local)
+- Engram service running (local or deployed instance)
 - Recall client binary available
 - API key configured
 - Empty local database (fresh start for each category)
@@ -47,7 +47,7 @@ This document defines end-to-end test scenarios for validating Engram integratio
 ```bash
 # Recall client configuration
 export RECALL_DB_PATH="./data/lore.db"
-export ENGRAM_URL="https://engram.fly.dev/api/v1"
+export ENGRAM_URL="https://localhost:8080/api/v1"
 export ENGRAM_API_KEY="<api-key>"
 export RECALL_SOURCE_ID="e2e-test-client-a"
 
@@ -71,7 +71,7 @@ export RECALL_SOURCE_ID_B="e2e-test-client-b"
 ```bash
 # Set environment
 export RECALL_DB_PATH="./data/lore.db"
-export ENGRAM_URL="https://engram.fly.dev/api/v1"
+export ENGRAM_URL="https://localhost:8080/api/v1"
 export ENGRAM_API_KEY="<your-api-key>"
 export RECALL_SOURCE_ID="e2e-test-client-a"
 
@@ -79,7 +79,7 @@ export RECALL_SOURCE_ID="e2e-test-client-a"
 rm -f ./data/lore.db
 
 # Verify Engram health
-curl https://engram.fly.dev/api/v1/health | jq
+curl https://localhost:8080/api/v1/health | jq
 
 # Bootstrap from Engram
 /workspaces/engram/tmp/recall sync bootstrap
@@ -120,7 +120,7 @@ curl https://engram.fly.dev/api/v1/health | jq
 rm -f ./data/lore.db
 
 # Check Engram lore count
-curl -s https://engram.fly.dev/api/v1/health | jq '.lore_count'
+curl -s https://localhost:8080/api/v1/health | jq '.lore_count'
 
 # Bootstrap
 /workspaces/engram/tmp/recall sync bootstrap
@@ -523,7 +523,7 @@ rm -f ./data/lore.db
 **Test Commands:**
 ```bash
 # Note initial count
-INITIAL=$(curl -s https://engram.fly.dev/api/v1/health | jq '.lore_count')
+INITIAL=$(curl -s https://localhost:8080/api/v1/health | jq '.lore_count')
 echo "Initial count: $INITIAL"
 
 # Source A: Record and push
@@ -547,7 +547,7 @@ RECALL_DB_PATH="./data/lore-b.db" RECALL_SOURCE_ID="source-b" \
   /workspaces/engram/tmp/recall sync push
 
 # Check final count (should be INITIAL + 1, not INITIAL + 2)
-FINAL=$(curl -s https://engram.fly.dev/api/v1/health | jq '.lore_count')
+FINAL=$(curl -s https://localhost:8080/api/v1/health | jq '.lore_count')
 echo "Final count: $FINAL (expected: $((INITIAL + 1)))"
 
 # Verify merged entry has both sources
@@ -622,7 +622,7 @@ echo "Final count: $FINAL (expected: $((INITIAL + 1)))"
 ```bash
 # Generate 4001 character content
 LONG_CONTENT=$(printf 'x%.0s' {1..4001})
-curl -X POST https://engram.fly.dev/api/v1/lore \
+curl -X POST https://localhost:8080/api/v1/lore \
   -H "Authorization: Bearer $ENGRAM_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"source_id\":\"test\",\"lore\":[{\"content\":\"$LONG_CONTENT\",\"category\":\"TESTING_STRATEGY\",\"confidence\":0.5}]}"
@@ -652,7 +652,7 @@ curl -X POST https://engram.fly.dev/api/v1/lore \
 
 **Test Command:**
 ```bash
-curl -X POST https://engram.fly.dev/api/v1/lore \
+curl -X POST https://localhost:8080/api/v1/lore \
   -H "Content-Type: application/json" \
   -d '{"source_id":"test","lore":[{"content":"test","category":"TESTING_STRATEGY","confidence":0.5}]}'
 ```
@@ -681,7 +681,7 @@ curl -X POST https://engram.fly.dev/api/v1/lore \
 
 **Test Command:**
 ```bash
-curl -X POST https://engram.fly.dev/api/v1/lore/feedback \
+curl -X POST https://localhost:8080/api/v1/lore/feedback \
   -H "Authorization: Bearer $ENGRAM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"source_id":"test","feedback":[{"id":"01ZZZZZZZZZZZZZZZZZZZZZZZZ","outcome":"helpful"}]}'
@@ -786,7 +786,7 @@ echo "Before: $BEFORE, After: $AFTER"
 [ "$BEFORE" = "$AFTER" ] && echo "PASS" || echo "FAIL"
 ```
 
-**Note:** Graceful shutdown tests require local Engram instance. Cannot test against fly.dev production.
+**Note:** Graceful shutdown tests require local Engram instance. Cannot test against remote deployments.
 
 ---
 
@@ -940,7 +940,7 @@ For each test record:
 
 **Lore Ingestion:**
 ```bash
-curl -X POST https://engram.fly.dev/api/v1/lore \
+curl -X POST https://localhost:8080/api/v1/lore \
   -H "Authorization: Bearer $ENGRAM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -955,7 +955,7 @@ curl -X POST https://engram.fly.dev/api/v1/lore \
 
 **Feedback Batch:**
 ```bash
-curl -X POST https://engram.fly.dev/api/v1/lore/feedback \
+curl -X POST https://localhost:8080/api/v1/lore/feedback \
   -H "Authorization: Bearer $ENGRAM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

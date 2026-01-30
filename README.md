@@ -105,22 +105,7 @@ See [docs/configuration.md](docs/configuration.md) for detailed configuration op
 
 ## Deployment
 
-### Fly.io
-
-```bash
-# Create app
-fly apps create engram
-
-# Create volume for SQLite persistence
-fly volumes create engram_data --size 1 --region ord
-
-# Set secrets
-fly secrets set OPENAI_API_KEY=sk-...
-fly secrets set ENGRAM_API_KEY=...
-
-# Deploy
-fly deploy
-```
+Engram can be deployed to any platform that supports Docker containers or Go binaries.
 
 ### Docker
 
@@ -132,6 +117,18 @@ docker run -p 8080:8080 \
   -v engram_data:/data \
   engram
 ```
+
+### Binary
+
+```bash
+# Build for your platform
+make build
+
+# Run with environment variables
+OPENAI_API_KEY=sk-... ENGRAM_API_KEY=... ./engram
+```
+
+Ensure persistent storage is configured for the SQLite database path (`ENGRAM_DB_PATH`).
 
 ## Client Library
 
