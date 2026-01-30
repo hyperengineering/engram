@@ -16,6 +16,20 @@ import (
 	"github.com/hyperengineering/engram/internal/validation"
 )
 
+// HeaderRecallSourceID is the header name for client identification.
+// Recall clients should send this header to enable per-client tracking in logs.
+const HeaderRecallSourceID = "X-Recall-Source-ID"
+
+// extractSourceID returns the client source ID from the request header.
+// Returns "unknown" if the header is not present or empty.
+func extractSourceID(r *http.Request) string {
+	sourceID := r.Header.Get(HeaderRecallSourceID)
+	if sourceID == "" {
+		return "unknown"
+	}
+	return sourceID
+}
+
 // Handler implements the API handlers
 type Handler struct {
 	store    store.Store
@@ -56,6 +70,8 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 
 // IngestLore handles POST /api/v1/lore
 func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	var req types.IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteProblem(w, r, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %s", err.Error()))
@@ -94,7 +110,13 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 	if len(validEntries) > 0 {
 		result, err := h.store.IngestLore(r.Context(), validEntries)
 		if err != nil {
-			slog.Error("ingest failed", "error", err, "source_id", req.SourceID)
+			slog.Error("ingest failed",
+				"component", "api",
+				"action", "ingest_failed",
+				"source_id", req.SourceID,
+				"remote_addr", r.RemoteAddr,
+				"error", err,
+			)
 			MapStoreError(w, r, err)
 			return
 		}
@@ -102,10 +124,23 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 		merged = result.Merged
 	}
 
+	rejected := len(req.Lore) - len(validEntries)
+
+	slog.Info("lore ingested",
+		"component", "api",
+		"action", "ingest",
+		"source_id", req.SourceID,
+		"remote_addr", r.RemoteAddr,
+		"accepted", accepted,
+		"merged", merged,
+		"rejected", rejected,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
 	resp := types.IngestResult{
 		Accepted: accepted,
 		Merged:   merged,
-		Rejected: len(req.Lore) - len(validEntries),
+		Rejected: rejected,
 		Errors:   allErrors,
 	}
 
@@ -118,18 +153,30 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 // Returns 503 with Retry-After if no snapshot is available.
 func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	slog.Debug("snapshot serve started", "component", "api", "action", "snapshot_serve_start")
+	sourceID := extractSourceID(r)
 
 	reader, err := h.store.GetSnapshot(r.Context())
 	if errors.Is(err, store.ErrSnapshotNotAvailable) {
-		slog.Warn("snapshot not available", "component", "api", "action", "snapshot_not_available")
+		slog.Warn("snapshot not available",
+			"component", "api",
+			"action", "client_bootstrap_failed",
+			"source_id", sourceID,
+			"remote_addr", r.RemoteAddr,
+			"reason", "snapshot_not_ready",
+		)
 		w.Header().Set("Retry-After", "60")
 		WriteProblem(w, r, http.StatusServiceUnavailable,
 			"Snapshot not yet available. Please retry after the indicated interval.")
 		return
 	}
 	if err != nil {
-		slog.Error("failed to get snapshot", "error", err)
+		slog.Error("snapshot retrieval failed",
+			"component", "api",
+			"action", "client_bootstrap_failed",
+			"source_id", sourceID,
+			"remote_addr", r.RemoteAddr,
+			"error", err,
+		)
 		WriteProblem(w, r, http.StatusInternalServerError,
 			"Internal error retrieving snapshot")
 		return
@@ -139,15 +186,22 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	bytesWritten, err := io.Copy(w, reader)
 	if err != nil {
-		slog.Debug("snapshot stream interrupted", "component", "api", "error", err)
+		slog.Debug("snapshot stream interrupted",
+			"component", "api",
+			"source_id", sourceID,
+			"error", err,
+		)
 		return
 	}
 
-	slog.Info("snapshot serve completed",
+	slog.Info("recall client bootstrap",
 		"component", "api",
-		"action", "snapshot_serve",
+		"action", "client_bootstrap",
+		"source_id", sourceID,
+		"remote_addr", r.RemoteAddr,
+		"bytes_served", bytesWritten,
 		"duration_ms", time.Since(start).Milliseconds(),
-		"bytes_written", bytesWritten)
+	)
 }
 
 // Delta handles GET /api/v1/lore/delta
@@ -155,13 +209,19 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 // Returns 400 if since is missing or invalid.
 // Returns JSON with lore[], deleted_ids[], and as_of.
 func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("delta sync requested", "component", "api", "action", "delta_start")
 	start := time.Now()
+	sourceID := extractSourceID(r)
 
 	// Parse and validate since parameter
 	since := r.URL.Query().Get("since")
 	if since == "" {
-		slog.Warn("delta request missing since", "component", "api", "action", "delta_invalid_since")
+		slog.Warn("delta request missing since",
+			"component", "api",
+			"action", "client_sync_failed",
+			"source_id", sourceID,
+			"remote_addr", r.RemoteAddr,
+			"reason", "missing_since",
+		)
 		WriteProblem(w, r, http.StatusBadRequest,
 			"Missing required query parameter: since")
 		return
@@ -169,7 +229,14 @@ func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 
 	sinceTime, err := time.Parse(time.RFC3339, since)
 	if err != nil {
-		slog.Warn("delta request invalid since", "component", "api", "action", "delta_invalid_since", "since", since, "error", err)
+		slog.Warn("delta request invalid since",
+			"component", "api",
+			"action", "client_sync_failed",
+			"source_id", sourceID,
+			"remote_addr", r.RemoteAddr,
+			"since", since,
+			"error", err,
+		)
 		WriteProblem(w, r, http.StatusBadRequest,
 			"Invalid since timestamp: must be RFC3339 format (e.g., 2026-01-29T10:00:00Z)")
 		return
@@ -177,19 +244,29 @@ func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.store.GetDelta(r.Context(), sinceTime)
 	if err != nil {
-		slog.Error("failed to get delta", "component", "api", "action", "delta_failed", "since", since, "error", err)
+		slog.Error("delta retrieval failed",
+			"component", "api",
+			"action", "client_sync_failed",
+			"source_id", sourceID,
+			"remote_addr", r.RemoteAddr,
+			"since", since,
+			"error", err,
+		)
 		WriteProblem(w, r, http.StatusInternalServerError,
 			"Internal error retrieving delta")
 		return
 	}
 
-	slog.Info("delta sync completed",
+	slog.Info("recall client sync",
 		"component", "api",
-		"action", "delta_sync",
+		"action", "client_sync",
+		"source_id", sourceID,
+		"remote_addr", r.RemoteAddr,
 		"since", since,
 		"lore_count", len(result.Lore),
 		"deleted_count", len(result.DeletedIDs),
-		"duration_ms", time.Since(start).Milliseconds())
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -251,7 +328,13 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 	// Call store
 	result, err := h.store.RecordFeedback(r.Context(), feedbackEntries)
 	if err != nil {
-		slog.Error("feedback processing failed", "error", err, "source_id", req.SourceID)
+		slog.Error("feedback processing failed",
+			"component", "api",
+			"action", "feedback_failed",
+			"source_id", req.SourceID,
+			"remote_addr", r.RemoteAddr,
+			"error", err,
+		)
 		MapStoreError(w, r, err)
 		return
 	}
@@ -262,6 +345,8 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("feedback processing exceeded performance target",
 			"component", "api",
 			"action", "feedback",
+			"source_id", req.SourceID,
+			"remote_addr", r.RemoteAddr,
 			"duration_ms", duration.Milliseconds(),
 			"count", len(req.Feedback),
 		)
@@ -271,6 +356,7 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 		"component", "api",
 		"action", "feedback",
 		"source_id", req.SourceID,
+		"remote_addr", r.RemoteAddr,
 		"count", len(result.Updates),
 		"duration_ms", duration.Milliseconds(),
 	)

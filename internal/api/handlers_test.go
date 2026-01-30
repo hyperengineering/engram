@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2003,6 +2005,394 @@ func TestDeleteLore_Unauthorized(t *testing.T) {
 }
 
 // --- Delete Integration Test (Story 6.4) ---
+
+// --- Recall Client Connection Logging Tests (Story 6.6) ---
+
+// logEntry represents a captured structured log entry for testing
+type logEntry struct {
+	Level     string `json:"level"`
+	Msg       string `json:"msg"`
+	Component string `json:"component"`
+	Action    string `json:"action"`
+	SourceID  string `json:"source_id"`
+	RemoteAddr string `json:"remote_addr"`
+	BytesServed int64 `json:"bytes_served"`
+	DurationMs int64 `json:"duration_ms"`
+	Since      string `json:"since"`
+	LoreCount  int    `json:"lore_count"`
+	DeletedCount int  `json:"deleted_count"`
+	Accepted   int    `json:"accepted"`
+	Merged     int    `json:"merged"`
+	Rejected   int    `json:"rejected"`
+	Count      int    `json:"count"`
+}
+
+// captureLog runs a function and captures all slog output, returning parsed log entries
+func captureLog(t *testing.T, fn func()) []logEntry {
+	t.Helper()
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	fn()
+
+	var entries []logEntry
+	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var entry logEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Logf("failed to parse log line: %s", line)
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// findLogEntry finds a log entry with matching action
+func findLogEntry(entries []logEntry, action string) *logEntry {
+	for _, e := range entries {
+		if e.Action == action {
+			return &e
+		}
+	}
+	return nil
+}
+
+func TestExtractSourceID_WithHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(HeaderRecallSourceID, "test-client-abc123")
+
+	sourceID := extractSourceID(req)
+
+	if sourceID != "test-client-abc123" {
+		t.Errorf("extractSourceID() = %q, want %q", sourceID, "test-client-abc123")
+	}
+}
+
+func TestExtractSourceID_WithoutHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	sourceID := extractSourceID(req)
+
+	if sourceID != "unknown" {
+		t.Errorf("extractSourceID() = %q, want %q", sourceID, "unknown")
+	}
+}
+
+func TestExtractSourceID_EmptyHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(HeaderRecallSourceID, "")
+
+	sourceID := extractSourceID(req)
+
+	if sourceID != "unknown" {
+		t.Errorf("extractSourceID() = %q, want %q for empty header", sourceID, "unknown")
+	}
+}
+
+func TestSnapshot_LogsClientBootstrapWithSourceID(t *testing.T) {
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(strings.NewReader(string(testData)))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+		snapshotErr:    nil,
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
+	req.Header.Set(HeaderRecallSourceID, "devcontainer-test123")
+	w := httptest.NewRecorder()
+
+	entries := captureLog(t, func() {
+		handler.Snapshot(w, req)
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	entry := findLogEntry(entries, "client_bootstrap")
+	if entry == nil {
+		t.Fatalf("expected log with action=client_bootstrap, got entries: %+v", entries)
+	}
+
+	if entry.SourceID != "devcontainer-test123" {
+		t.Errorf("source_id = %q, want %q", entry.SourceID, "devcontainer-test123")
+	}
+	if entry.Msg != "recall client bootstrap" {
+		t.Errorf("msg = %q, want %q", entry.Msg, "recall client bootstrap")
+	}
+	if entry.Component != "api" {
+		t.Errorf("component = %q, want %q", entry.Component, "api")
+	}
+	if entry.BytesServed == 0 {
+		t.Error("expected bytes_served > 0")
+	}
+}
+
+func TestSnapshot_LogsUnknownSourceIDWithoutHeader(t *testing.T) {
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(strings.NewReader(string(testData)))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+		snapshotErr:    nil,
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
+	// No X-Recall-Source-ID header
+	w := httptest.NewRecorder()
+
+	entries := captureLog(t, func() {
+		handler.Snapshot(w, req)
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	entry := findLogEntry(entries, "client_bootstrap")
+	if entry == nil {
+		t.Fatalf("expected log with action=client_bootstrap, got entries: %+v", entries)
+	}
+
+	if entry.SourceID != "unknown" {
+		t.Errorf("source_id = %q, want %q when header absent", entry.SourceID, "unknown")
+	}
+}
+
+func TestDelta_LogsClientSyncWithSourceID(t *testing.T) {
+	asOf := time.Now().UTC()
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		deltaResult: &types.DeltaResult{
+			Lore: []types.LoreEntry{
+				{ID: "test-id-1", Content: "Test", Category: "PATTERN_OUTCOME"},
+				{ID: "test-id-2", Content: "Test 2", Category: "PATTERN_OUTCOME"},
+			},
+			DeletedIDs: []string{"deleted-1"},
+			AsOf:       asOf,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since=2026-01-28T10:00:00Z", nil)
+	req.Header.Set(HeaderRecallSourceID, "devcontainer-delta123")
+	w := httptest.NewRecorder()
+
+	entries := captureLog(t, func() {
+		handler.Delta(w, req)
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	entry := findLogEntry(entries, "client_sync")
+	if entry == nil {
+		t.Fatalf("expected log with action=client_sync, got entries: %+v", entries)
+	}
+
+	if entry.SourceID != "devcontainer-delta123" {
+		t.Errorf("source_id = %q, want %q", entry.SourceID, "devcontainer-delta123")
+	}
+	if entry.Msg != "recall client sync" {
+		t.Errorf("msg = %q, want %q", entry.Msg, "recall client sync")
+	}
+	if entry.LoreCount != 2 {
+		t.Errorf("lore_count = %d, want %d", entry.LoreCount, 2)
+	}
+	if entry.DeletedCount != 1 {
+		t.Errorf("deleted_count = %d, want %d", entry.DeletedCount, 1)
+	}
+}
+
+func TestDelta_LogsUnknownSourceIDWithoutHeader(t *testing.T) {
+	asOf := time.Now().UTC()
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		deltaResult: &types.DeltaResult{
+			Lore:       []types.LoreEntry{},
+			DeletedIDs: []string{},
+			AsOf:       asOf,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since=2026-01-28T10:00:00Z", nil)
+	// No X-Recall-Source-ID header
+	w := httptest.NewRecorder()
+
+	entries := captureLog(t, func() {
+		handler.Delta(w, req)
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	entry := findLogEntry(entries, "client_sync")
+	if entry == nil {
+		t.Fatalf("expected log with action=client_sync, got entries: %+v", entries)
+	}
+
+	if entry.SourceID != "unknown" {
+		t.Errorf("source_id = %q, want %q when header absent", entry.SourceID, "unknown")
+	}
+}
+
+func TestIngestLore_LogsSuccessWithSourceIDAndCounts(t *testing.T) {
+	s := &mockStore{
+		stats: &types.StoreStats{},
+		ingestResult: &types.IngestResult{
+			Accepted: 2,
+			Merged:   1,
+			Rejected: 0,
+			Errors:   []string{},
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-ingest123",
+		"lore": [
+			{"content": "First insight", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.7},
+			{"content": "Second insight", "category": "PATTERN_OUTCOME", "confidence": 0.8},
+			{"content": "Third insight", "category": "ARCHITECTURAL_DECISION", "confidence": 0.9}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	entries := captureLog(t, func() {
+		handler.IngestLore(w, req)
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	entry := findLogEntry(entries, "ingest")
+	if entry == nil {
+		t.Fatalf("expected log with action=ingest, got entries: %+v", entries)
+	}
+
+	if entry.SourceID != "devcontainer-ingest123" {
+		t.Errorf("source_id = %q, want %q", entry.SourceID, "devcontainer-ingest123")
+	}
+	if entry.Msg != "lore ingested" {
+		t.Errorf("msg = %q, want %q", entry.Msg, "lore ingested")
+	}
+	if entry.Accepted != 2 {
+		t.Errorf("accepted = %d, want %d", entry.Accepted, 2)
+	}
+	if entry.Merged != 1 {
+		t.Errorf("merged = %d, want %d", entry.Merged, 1)
+	}
+	if entry.DurationMs < 0 {
+		t.Error("expected duration_ms >= 0")
+	}
+}
+
+func TestIngestLore_LogsFailureWithSourceID(t *testing.T) {
+	s := &mockStore{
+		stats:     &types.StoreStats{},
+		ingestErr: errors.New("database connection failed"),
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-fail123",
+		"lore": [{"content": "Test", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.5}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	entries := captureLog(t, func() {
+		handler.IngestLore(w, req)
+	})
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	entry := findLogEntry(entries, "ingest_failed")
+	if entry == nil {
+		t.Fatalf("expected log with action=ingest_failed, got entries: %+v", entries)
+	}
+
+	if entry.SourceID != "devcontainer-fail123" {
+		t.Errorf("source_id = %q, want %q", entry.SourceID, "devcontainer-fail123")
+	}
+}
+
+func TestFeedback_PerformanceWarningIncludesSourceID(t *testing.T) {
+	// Create a slow feedback store that takes > 500ms
+	baseStore := &mockStore{
+		stats: &types.StoreStats{},
+		feedbackResult: &types.FeedbackResult{
+			Updates: []types.FeedbackResultUpdate{},
+		},
+	}
+	slowStore := &slowFeedbackStore{mockStore: baseStore, delay: 600 * time.Millisecond}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := NewHandler(slowStore, embedder, "api-key", "1.0.0")
+
+	body := `{
+		"source_id": "devcontainer-slow123",
+		"feedback": [
+			{"lore_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "helpful"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	entries := captureLog(t, func() {
+		handler.Feedback(w, req)
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Find the warning log (it should have action=feedback and be a WARN level)
+	var warningEntry *logEntry
+	for _, e := range entries {
+		if e.Action == "feedback" && e.Level == "WARN" {
+			warningEntry = &e
+			break
+		}
+	}
+
+	if warningEntry == nil {
+		t.Fatalf("expected WARN log with action=feedback, got entries: %+v", entries)
+	}
+
+	if warningEntry.SourceID != "devcontainer-slow123" {
+		t.Errorf("performance warning source_id = %q, want %q", warningEntry.SourceID, "devcontainer-slow123")
+	}
+}
 
 func TestDeleteLore_RateLimited(t *testing.T) {
 	s := &mockStore{stats: &types.StoreStats{}}
