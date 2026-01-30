@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  workspace:
+    image: mcr.microsoft.com/devcontainers/go:1-1.23-bookworm
+    volumes:
+      - ..:/workspaces/engram:cached
+      - go-mod-cache:/go/pkg/mod
+    command: sleep infinity
+    environment:
+      - ENGRAM_DB_PATH=/workspaces/engram/data/lore.db
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+volumes:
+  go-mod-cache:

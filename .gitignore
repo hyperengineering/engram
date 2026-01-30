@@ -1,0 +1,42 @@
+# Build output
+dist/
+bin/
+engram
+
+# Database files
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Environment files with secrets
+.env
+.env.local
+.env.e2e
+.env.integration
+
+# Temp files
+tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Tool configs
+.claude/
+.opencode/
+
+# OS
+.DS_Store
+
+# Go
+vendor/
+
+# Test output
+coverage.out
+coverage.html
+
+# BMAD framework
+_bmad/
+_bmad-output/
