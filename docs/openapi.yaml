@@ -7,7 +7,16 @@ info:
     Engram provides a central repository for experiential knowledge (lore) that
     AI agents accumulate during development sessions. Features include semantic
     deduplication, confidence scoring, feedback integration, and efficient sync.
-  version: 1.0.0
+
+    ## Multi-Store Support (v1.1)
+
+    Engram supports isolated stores for multi-project deployments. Each store
+    maintains its own lore collection with independent snapshots and statistics.
+
+    - **Default store**: Auto-created, used by legacy `/lore/*` routes
+    - **Named stores**: Created via `POST /stores`, accessed via `/stores/{store_id}/lore/*`
+    - **Backward compatible**: Existing clients work without changes
+  version: 1.1.0
   contact:
     name: Engram Team
   license:
@@ -24,6 +33,8 @@ tags:
     description: Service health and status
   - name: Monitoring
     description: Extended system metrics and monitoring
+  - name: Stores
+    description: Multi-store management for isolated lore collections
   - name: Lore
     description: Lore ingestion and retrieval
   - name: Sync
@@ -36,9 +47,23 @@ paths:
     get:
       tags: [Health]
       summary: Check service health
-      description: Returns service status, version, and configuration. No authentication required.
+      description: |
+        Returns service status, version, and configuration. No authentication required.
+
+        Use the optional `store` query parameter to get stats for a specific store.
+        Without this parameter, returns stats for the default store.
       operationId: getHealth
       security: []
+      parameters:
+        - name: store
+          in: query
+          required: false
+          schema:
+            type: string
+            example: "neuralmux/engram"
+          description: |
+            Store ID for store-specific health stats.
+            If omitted, returns stats for the default store.
       responses:
         '200':
           description: Service is healthy
@@ -46,12 +71,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
-              example:
-                status: "healthy"
-                version: "1.0.0"
-                embedding_model: "text-embedding-3-small"
-                lore_count: 1523
-                last_snapshot: "2026-01-29T14:30:00Z"
+              examples:
+                default:
+                  summary: Default store health
+                  value:
+                    status: "healthy"
+                    version: "1.0.0"
+                    embedding_model: "text-embedding-3-small"
+                    lore_count: 1523
+                    last_snapshot: "2026-01-29T14:30:00Z"
+                store_specific:
+                  summary: Store-specific health
+                  value:
+                    status: "healthy"
+                    version: "1.0.0"
+                    embedding_model: "text-embedding-3-small"
+                    lore_count: 847
+                    last_snapshot: "2026-01-29T14:30:00Z"
+                    store_id: "neuralmux/engram"
+        '400':
+          description: Invalid store ID format
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Store not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /stats:
     get:
@@ -77,6 +126,499 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+
+  # === Store Management Endpoints ===
+
+  /stores:
+    get:
+      tags: [Stores]
+      summary: List all stores
+      description: |
+        Returns a list of all stores with summary information including
+        record counts and storage sizes. Stores are sorted alphabetically by ID.
+      operationId: listStores
+      responses:
+        '200':
+          description: List of stores
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListStoresResponse'
+              example:
+                stores:
+                  - id: "default"
+                    record_count: 1523
+                    last_accessed: "2026-01-31T10:30:00Z"
+                    size_bytes: 4194304
+                    description: "Default store (auto-created)"
+                  - id: "neuralmux/engram"
+                    record_count: 847
+                    last_accessed: "2026-01-31T09:15:00Z"
+                    size_bytes: 2097152
+                    description: "Engram project lore"
+                total: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: Internal server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Multi-store support not configured
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    post:
+      tags: [Stores]
+      summary: Create a new store
+      description: |
+        Creates a new isolated store for lore entries. The default store is
+        auto-created on first access and does not need explicit creation.
+
+        **Store ID Format:**
+        - Lowercase alphanumeric characters and hyphens only
+        - Path segments separated by `/` (max 4 levels)
+        - Maximum 128 characters total
+        - Must start and end with alphanumeric (no leading/trailing hyphens)
+        - Examples: `myproject`, `org/team/project`, `neuralmux/engram`
+      operationId: createStore
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStoreRequest'
+            example:
+              store_id: "neuralmux/recall"
+              description: "Recall client lore"
+      responses:
+        '201':
+          description: Store created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateStoreResponse'
+              example:
+                id: "neuralmux/recall"
+                created: "2026-01-31T11:00:00Z"
+                description: "Recall client lore"
+        '400':
+          description: Invalid store ID format
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/bad-request"
+                title: "Bad Request"
+                status: 400
+                detail: "invalid store ID: must be lowercase alphanumeric with hyphens"
+                instance: "/api/v1/stores"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Store already exists
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/conflict"
+                title: "Conflict"
+                status: 409
+                detail: "Store already exists: neuralmux/recall"
+                instance: "/api/v1/stores"
+        '500':
+          description: Internal server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Multi-store support not configured
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /stores/{store_id}:
+    get:
+      tags: [Stores]
+      summary: Get store information
+      description: |
+        Returns detailed information about a specific store including
+        extended statistics (lore counts, embedding stats, quality metrics).
+      operationId: getStoreInfo
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+      responses:
+        '200':
+          description: Store information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreInfoResponse'
+              example:
+                id: "neuralmux/engram"
+                created: "2026-01-15T08:00:00Z"
+                last_accessed: "2026-01-31T10:30:00Z"
+                description: "Engram project lore"
+                size_bytes: 2097152
+                stats:
+                  total_lore: 850
+                  active_lore: 847
+                  deleted_lore: 3
+                  embedding_stats:
+                    complete: 840
+                    pending: 7
+                    failed: 0
+                  category_stats:
+                    ARCHITECTURAL_DECISION: 125
+                    PATTERN_OUTCOME: 89
+                  quality_stats:
+                    average_confidence: 0.72
+                    validated_count: 156
+                    high_confidence_count: 312
+                    low_confidence_count: 45
+                  unique_source_count: 8
+                  stats_as_of: "2026-01-31T10:30:00Z"
+        '400':
+          description: Invalid store ID format
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: Internal server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Multi-store support not configured
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    delete:
+      tags: [Stores]
+      summary: Delete a store
+      description: |
+        Permanently deletes a store and all its lore data.
+
+        **Safeguards:**
+        - Requires `confirm=true` query parameter
+        - The `default` store cannot be deleted (returns 403)
+
+        **Warning:** This operation is irreversible.
+      operationId: deleteStore
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: ["true"]
+          description: Must be `true` to confirm deletion
+      responses:
+        '204':
+          description: Store deleted successfully
+        '400':
+          description: Missing confirm=true parameter or invalid store ID
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/bad-request"
+                title: "Bad Request"
+                status: 400
+                detail: "Delete requires confirm=true query parameter"
+                instance: "/api/v1/stores/neuralmux%2Fengram"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Cannot delete the default store
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/forbidden"
+                title: "Forbidden"
+                status: 403
+                detail: "Cannot delete the default store"
+                instance: "/api/v1/stores/default"
+        '404':
+          description: Store not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: Internal server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Multi-store support not configured
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  # === Store-Scoped Lore Endpoints ===
+
+  /stores/{store_id}/lore:
+    post:
+      tags: [Lore]
+      summary: Ingest lore entries (store-scoped)
+      description: |
+        Submit a batch of lore entries to a specific store. Identical to
+        `POST /lore` but targets the specified store instead of the default.
+
+        See [Ingest Lore](#/Lore/ingestLore) for full documentation.
+      operationId: ingestLoreToStore
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+      responses:
+        '200':
+          description: Batch processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          description: Invalid JSON syntax or store ID
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Request-level validation failed
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetailsWithErrors'
+
+  /stores/{store_id}/lore/snapshot:
+    get:
+      tags: [Sync]
+      summary: Download full snapshot (store-scoped)
+      description: |
+        Download a complete database snapshot for a specific store.
+        See [Get Snapshot](#/Sync/getSnapshot) for full documentation.
+      operationId: getSnapshotFromStore
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+        - name: X-Recall-Source-ID
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Client source identifier for observability
+      responses:
+        '200':
+          description: SQLite database snapshot
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: Suggested filename for the download
+              example: 'attachment; filename="engram-snapshot.db"'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Snapshot not yet available
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds to wait before retrying
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /stores/{store_id}/lore/delta:
+    get:
+      tags: [Sync]
+      summary: Get incremental changes (store-scoped)
+      description: |
+        Retrieve lore changes since a given timestamp from a specific store.
+        See [Get Delta](#/Sync/getDelta) for full documentation.
+      operationId: getDeltaFromStore
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+        - name: X-Recall-Source-ID
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Client source identifier for observability
+        - name: since
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          description: RFC3339 timestamp to get changes from
+      responses:
+        '200':
+          description: Delta changes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeltaResult'
+        '400':
+          description: Invalid or missing since parameter
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /stores/{store_id}/lore/feedback:
+    post:
+      tags: [Feedback]
+      summary: Submit lore feedback (store-scoped)
+      description: |
+        Submit batch feedback on lore entries in a specific store.
+        See [Submit Feedback](#/Feedback/submitFeedback) for full documentation.
+      operationId: submitFeedbackToStore
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackRequest'
+      responses:
+        '200':
+          description: Feedback processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedbackResult'
+        '400':
+          description: Invalid JSON syntax
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store or lore entry not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetailsWithErrors'
+
+  /stores/{store_id}/lore/{id}:
+    delete:
+      tags: [Lore]
+      summary: Delete a lore entry (store-scoped)
+      description: |
+        Soft-delete a specific lore entry from a store. The entry will be
+        marked as deleted and included in delta sync `deleted_ids`.
+
+        **Rate Limiting:** DELETE operations are rate-limited to prevent abuse
+        (100 burst, 10/second sustained).
+      operationId: deleteLoreFromStore
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: ULID of the lore entry to delete
+      responses:
+        '204':
+          description: Lore entry deleted
+        '400':
+          description: Invalid lore ID format
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store or lore entry not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          description: Rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds to wait before retrying
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  # === Default Store Lore Endpoints ===
 
   /lore:
     post:
@@ -156,6 +698,12 @@ paths:
       responses:
         '200':
           description: SQLite database snapshot
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: Suggested filename for the download
+              example: 'attachment; filename="engram-snapshot.db"'
           content:
             application/octet-stream:
               schema:
@@ -310,6 +858,76 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetailsWithErrors'
 
+  /lore/{id}:
+    delete:
+      tags: [Lore]
+      summary: Delete a lore entry
+      description: |
+        Soft-delete a specific lore entry from the default store. The entry
+        will be marked as deleted and included in delta sync `deleted_ids`.
+
+        **Rate Limiting:** DELETE operations are rate-limited to prevent abuse
+        (100 burst, 10/second sustained).
+
+        For store-scoped deletion, use `DELETE /stores/{store_id}/lore/{id}`.
+      operationId: deleteLore
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: ULID of the lore entry to delete
+          example: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+      responses:
+        '204':
+          description: Lore entry deleted successfully
+        '400':
+          description: Invalid lore ID format
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/bad-request"
+                title: "Bad Request"
+                status: 400
+                detail: "Invalid lore ID format: must be valid ULID"
+                instance: "/api/v1/lore/invalid-id"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Lore entry not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/not-found"
+                title: "Not Found"
+                status: 404
+                detail: "Lore entry not found"
+                instance: "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        '429':
+          description: Rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds to wait before retrying
+              example: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/rate-limit"
+                title: "Too Many Requests"
+                status: 429
+                detail: "Rate limit exceeded for DELETE operations"
+                instance: "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -319,7 +937,148 @@ components:
         API key authentication via Bearer token.
         Include header: `Authorization: Bearer <your-api-key>`
 
+  parameters:
+    StoreIdPath:
+      name: store_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/StoreID'
+      description: |
+        Store identifier. Must be URL-encoded if it contains forward slashes.
+        Example: `neuralmux%2Fengram` for `neuralmux/engram`
+
   schemas:
+    # === Store Types ===
+
+    StoreID:
+      type: string
+      description: |
+        Store identifier following these rules:
+        - Lowercase alphanumeric characters and hyphens only
+        - Path segments separated by `/` (max 4 levels)
+        - Maximum 128 characters total
+        - Each segment must start and end with alphanumeric
+        - No empty segments allowed
+      pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\/[a-z0-9]([a-z0-9-]*[a-z0-9])?){0,3}$'
+      maxLength: 128
+      example: "neuralmux/engram"
+
+    StoreListItem:
+      type: object
+      description: Summary information for a store in list responses
+      required:
+        - id
+        - record_count
+        - last_accessed
+        - size_bytes
+      properties:
+        id:
+          $ref: '#/components/schemas/StoreID'
+        record_count:
+          type: integer
+          format: int64
+          description: Number of lore entries in the store
+          example: 1523
+        last_accessed:
+          type: string
+          format: date-time
+          description: Timestamp of last store access
+          example: "2026-01-31T10:30:00Z"
+        size_bytes:
+          type: integer
+          format: int64
+          description: Database file size in bytes
+          example: 4194304
+        description:
+          type: string
+          description: Optional human-readable description
+          example: "Default store (auto-created)"
+
+    ListStoresResponse:
+      type: object
+      description: Response for listing all stores
+      required:
+        - stores
+        - total
+      properties:
+        stores:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoreListItem'
+          description: List of stores sorted alphabetically by ID
+        total:
+          type: integer
+          description: Total number of stores
+          example: 2
+
+    StoreInfoResponse:
+      type: object
+      description: Detailed information about a specific store
+      required:
+        - id
+        - created
+        - last_accessed
+        - size_bytes
+        - stats
+      properties:
+        id:
+          $ref: '#/components/schemas/StoreID'
+        created:
+          type: string
+          format: date-time
+          description: Store creation timestamp
+          example: "2026-01-15T08:00:00Z"
+        last_accessed:
+          type: string
+          format: date-time
+          description: Timestamp of last store access
+          example: "2026-01-31T10:30:00Z"
+        description:
+          type: string
+          description: Optional human-readable description
+          example: "Engram project lore"
+        size_bytes:
+          type: integer
+          format: int64
+          description: Database file size in bytes
+          example: 2097152
+        stats:
+          $ref: '#/components/schemas/ExtendedStats'
+
+    CreateStoreRequest:
+      type: object
+      description: Request body for creating a new store
+      required:
+        - store_id
+      properties:
+        store_id:
+          $ref: '#/components/schemas/StoreID'
+        description:
+          type: string
+          maxLength: 500
+          description: Optional human-readable description
+          example: "Recall client lore"
+
+    CreateStoreResponse:
+      type: object
+      description: Response after successfully creating a store
+      required:
+        - id
+        - created
+      properties:
+        id:
+          $ref: '#/components/schemas/StoreID'
+        created:
+          type: string
+          format: date-time
+          description: Store creation timestamp
+          example: "2026-01-31T11:00:00Z"
+        description:
+          type: string
+          description: Store description if provided
+          example: "Recall client lore"
+
     # === Core Types ===
 
     LoreEntry:
@@ -469,6 +1228,13 @@ components:
           minItems: 1
           maxItems: 50
           description: Lore entries to ingest (1-50 per batch)
+        flush:
+          type: boolean
+          default: false
+          description: |
+            If true, indicates this is a shutdown flush operation.
+            The server may prioritize processing these entries.
+            Used during client shutdown to ensure all pending lore is persisted.
 
     IngestResult:
       type: object
@@ -572,6 +1338,10 @@ components:
     FeedbackResultUpdate:
       type: object
       description: Confidence change for a single entry
+      required:
+        - lore_id
+        - previous_confidence
+        - current_confidence
       properties:
         lore_id:
           type: string
@@ -589,7 +1359,10 @@ components:
           example: 0.80
         validation_count:
           type: integer
-          description: Updated validation count (only for helpful feedback)
+          nullable: true
+          description: |
+            Updated validation count. Only present for "helpful" feedback.
+            Omitted for "incorrect" and "not_relevant" feedback types.
           example: 3
 
     HealthResponse:
@@ -619,6 +1392,12 @@ components:
           nullable: true
           description: Timestamp of last snapshot generation
           example: "2026-01-29T14:30:00Z"
+        store_id:
+          type: string
+          description: |
+            Store ID (only present when `?store=` query parameter was specified).
+            Omitted for default store health checks without the parameter.
+          example: "neuralmux/engram"
 
     ExtendedStats:
       type: object

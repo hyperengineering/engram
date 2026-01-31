@@ -56,6 +56,10 @@ var problemTypes = map[int]struct {
 		typeURI: "https://engram.dev/errors/forbidden",
 		title:   "Forbidden",
 	},
+	http.StatusTooManyRequests: {
+		typeURI: "https://engram.dev/errors/rate-limit",
+		title:   "Too Many Requests",
+	},
 }
 
 // WriteProblem writes an RFC 7807 Problem Details response.
