@@ -12,8 +12,8 @@ Engram enables AI agents to accumulate, persist, and recall experiential knowled
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         AI Agent Workflow                           │
 │                                                                     │
-│   Agent discovers insight  →  Records lore  →  Syncs to Engram     │
-│   Agent starts new task    ←  Recalls lore  ←  Queries local DB    │
+│   Agent discovers insight  →  Records lore  →  Syncs to Engram      │
+│   Agent starts new task    ←  Recalls lore  ←  Queries local DB     │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
@@ -100,8 +100,8 @@ The following example shows how agents can integrate with Recall to maintain per
 
 1. **Query at workflow start** — Each agent queries Engram for relevant lore before beginning work
 2. **Feedback at workflow end** — Agents report which retrieved lore was helpful, not relevant, or incorrect
-3. **Record only validated learnings** — Clario's feedback-loop records learnings only after implementation validates them
-4. **Sync at natural boundaries** — Hon triggers sync before merge to persist all feedback
+3. **Record only validated learnings** — Architect's feedback-loop records learnings only after implementation validates them
+4. **Sync at natural boundaries** — Refactor agent triggers sync before merge to persist all feedback
 
 This design ensures:
 - All agents benefit from accumulated project knowledge
