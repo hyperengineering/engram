@@ -193,11 +193,11 @@ Check that the service is running and responding:
 # Check service status
 sudo systemctl status engram
 
-# Test the health endpoint
-curl -H "X-API-Key: your-api-key" http://localhost:8080/health
+# Test the health endpoint (no authentication required)
+curl http://localhost:8080/api/v1/health
 
 # Expected response:
-# {"status":"healthy","version":"1.0.0"}
+# {"status":"healthy","version":"1.0.0","embedding_model":"text-embedding-3-small","lore_count":0,"last_snapshot":null}
 ```
 
 ## Security Features

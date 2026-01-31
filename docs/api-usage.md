@@ -1,10 +1,10 @@
 # API Usage Guide
 
-Practical examples and workflows for integrating with Engram.
+This guide covers practical examples and workflows for integrating with Engram.
 
 ## Authentication
 
-All endpoints except `/api/v1/health` require Bearer token authentication.
+All endpoints except `/api/v1/health` and `/api/v1/stats` require Bearer token authentication:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_API_KEY" https://engram.example.com/api/v1/lore
@@ -12,51 +12,110 @@ curl -H "Authorization: Bearer YOUR_API_KEY" https://engram.example.com/api/v1/l
 
 The API key is configured via the `ENGRAM_API_KEY` environment variable on the server.
 
+## Recall Client Integration
+
+[Recall](https://github.com/hyperengineering/recall) is the client library that AI agents use to interact with Engram. Understanding the client workflow helps contextualize the API design.
+
+### How Recall Clients Work
+
+Recall maintains a **local SQLite database** that mirrors Engram's lore store. This architecture provides:
+
+- **Low-latency queries** — Semantic search runs against local data, not over the network
+- **Offline capability** — Agents can record and query lore without connectivity
+- **Efficient sync** — Only changed data transfers during synchronization
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Recall Client                          │
+│                                                             │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐ │
+│  │   Record    │    │   Query     │    │    Feedback     │ │
+│  │   (write)   │    │   (read)    │    │    (update)     │ │
+│  └──────┬──────┘    └──────┬──────┘    └────────┬────────┘ │
+│         │                  │                     │          │
+│         ▼                  ▼                     ▼          │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │                  Local SQLite DB                      │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                           │                                 │
+│                           │ sync                            │
+│                           ▼                                 │
+└───────────────────────────┼─────────────────────────────────┘
+                            │
+                    ┌───────┴───────┐
+                    │    Engram     │
+                    │   (central)   │
+                    └───────────────┘
+```
+
+### Synchronization Flow
+
+1. **Bootstrap** (new environment):
+   - Client calls `GET /api/v1/lore/snapshot` to download the full database
+   - Replaces local database with the snapshot
+
+2. **Incremental Sync** (ongoing):
+   - Client calls `POST /api/v1/lore` to push new lore entries
+   - Client calls `POST /api/v1/lore/feedback` to push feedback
+   - Client calls `GET /api/v1/lore/delta?since=<timestamp>` to pull changes
+
+3. **Shutdown Flush**:
+   - Before shutdown, client pushes any pending lore and feedback
+
+### Session Reference System
+
+During a session, Recall tracks which lore was surfaced and assigns simple references (L1, L2, L3...) for easy feedback:
+
+```
+Agent receives context with recalled lore:
+  [L1] Queue consumers need idempotency verification (confidence: 0.80)
+  [L2] Message broker confirmations can be lost on crash (confidence: 0.75)
+  [L3] Batch processing can exceed memory limits (confidence: 0.65)
+
+After using the knowledge, agent provides feedback:
+  recall_feedback(helpful: ["L1", "L2"], not_relevant: ["L3"])
+```
+
 ## Common Workflows
 
 ### Initial Bootstrap (New Environment)
 
 When starting a new client environment, perform a full bootstrap:
 
-1. **Check service health and compatibility**
-2. **Download the complete snapshot**
-3. **Store locally for semantic search**
-
 ```bash
 # 1. Verify service is healthy and check embedding model
 curl https://engram.example.com/api/v1/health
 
-# 2. Download full snapshot
+# 2. Check if models match (important for semantic search compatibility)
+# Response includes: "embedding_model": "text-embedding-3-small"
+
+# 3. Download full snapshot
 curl -H "Authorization: Bearer YOUR_API_KEY" \
   https://engram.example.com/api/v1/lore/snapshot \
   -o lore-snapshot.db
 
-# 3. Replace local database with snapshot
-# (Implementation-specific)
+# 4. Replace local database with snapshot
+# (Implementation-specific to your client)
 ```
 
 ### Incremental Sync (Existing Environment)
 
-For ongoing synchronization:
-
-1. **Push local changes to Engram**
-2. **Push any feedback collected**
-3. **Pull changes from other environments**
+For ongoing synchronization after initial bootstrap:
 
 ```bash
-# 1. Push new lore
+# 1. Push new lore entries
 curl -X POST https://engram.example.com/api/v1/lore \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"source_id": "my-env-123", "lore": [...]}'
 
-# 2. Push feedback
+# 2. Push feedback collected during session
 curl -X POST https://engram.example.com/api/v1/lore/feedback \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"source_id": "my-env-123", "feedback": [...]}'
 
-# 3. Pull changes since last sync
+# 3. Pull changes from other environments
 curl -H "Authorization: Bearer YOUR_API_KEY" \
   "https://engram.example.com/api/v1/lore/delta?since=2026-01-28T10:00:00Z"
 ```
@@ -100,19 +159,21 @@ curl -X POST https://engram.example.com/api/v1/lore/feedback \
   }'
 ```
 
-**Feedback Types:**
+**Feedback Effects:**
 
-| Type | Effect | When to Use |
-|------|--------|-------------|
-| `helpful` | +0.08 confidence | Lore was useful and accurate |
+| Type | Confidence Change | When to Use |
+|------|-------------------|-------------|
+| `helpful` | +0.08 | Lore was useful and accurate |
 | `not_relevant` | No change | Lore didn't apply to this context |
-| `incorrect` | -0.15 confidence | Lore was wrong or misleading |
+| `incorrect` | -0.15 | Lore was wrong or misleading |
 
-## Endpoint Examples
+The asymmetric penalty for `incorrect` feedback reflects that bad information is more costly than good information is helpful.
+
+## Endpoint Reference
 
 ### Health Check
 
-Check service availability and configuration.
+Check service availability and configuration. **No authentication required.**
 
 **Request:**
 
@@ -137,6 +198,72 @@ curl https://engram.example.com/api/v1/health
 - Verify service is running before sync
 - Check embedding model compatibility
 - Monitor lore count growth
+
+---
+
+### Extended Stats
+
+Get detailed system metrics for monitoring dashboards. **No authentication required.**
+
+**Request:**
+
+```bash
+curl https://engram.example.com/api/v1/stats
+```
+
+**Response:**
+
+```json
+{
+  "total_lore": 1234,
+  "active_lore": 1200,
+  "deleted_lore": 34,
+  "embedding_stats": {
+    "complete": 1195,
+    "pending": 3,
+    "failed": 2
+  },
+  "category_stats": {
+    "ARCHITECTURAL_DECISION": 156,
+    "PATTERN_OUTCOME": 234,
+    "INTERFACE_LESSON": 89,
+    "EDGE_CASE_DISCOVERY": 178,
+    "IMPLEMENTATION_FRICTION": 145,
+    "TESTING_STRATEGY": 201,
+    "DEPENDENCY_BEHAVIOR": 112,
+    "PERFORMANCE_INSIGHT": 85
+  },
+  "quality_stats": {
+    "average_confidence": 0.72,
+    "validated_count": 456,
+    "high_confidence_count": 890,
+    "low_confidence_count": 78
+  },
+  "unique_source_count": 12,
+  "last_snapshot": "2026-01-28T12:00:00Z",
+  "last_decay": "2026-01-28T00:00:00Z",
+  "stats_as_of": "2026-01-30T14:30:00Z"
+}
+```
+
+**Field descriptions:**
+
+| Field | Description |
+|-------|-------------|
+| `total_lore` | All lore entries including deleted |
+| `active_lore` | Non-deleted lore entries |
+| `deleted_lore` | Soft-deleted entries |
+| `embedding_stats.complete` | Entries with generated embeddings |
+| `embedding_stats.pending` | Entries awaiting embedding generation |
+| `embedding_stats.failed` | Entries that failed embedding after max retries |
+| `category_stats` | Count of entries per category |
+| `quality_stats.average_confidence` | Mean confidence score |
+| `quality_stats.validated_count` | Entries with at least one "helpful" feedback |
+| `quality_stats.high_confidence_count` | Entries with confidence >= 0.7 |
+| `quality_stats.low_confidence_count` | Entries with confidence < 0.3 |
+| `unique_source_count` | Number of distinct source environments |
+| `last_snapshot` | When the last snapshot was generated |
+| `last_decay` | When confidence decay last ran |
 
 ---
 
@@ -180,6 +307,22 @@ curl -X POST https://engram.example.com/api/v1/lore \
 }
 ```
 
+**With semantic deduplication (merged response):**
+
+```json
+{
+  "accepted": 1,
+  "merged": 1,
+  "rejected": 0,
+  "errors": []
+}
+```
+
+When a submitted entry is semantically similar (>92% cosine similarity) to existing lore, it merges rather than creating a duplicate. The merge:
+- Boosts confidence by +0.10
+- Appends the new context
+- Aggregates source IDs
+
 **Partial Success (some entries invalid):**
 
 ```json
@@ -193,7 +336,7 @@ curl -X POST https://engram.example.com/api/v1/lore \
 }
 ```
 
-**Field Reference:**
+**Field Constraints:**
 
 | Field | Required | Constraints |
 |-------|----------|-------------|
@@ -234,7 +377,11 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 - **Content-Type:** `application/octet-stream`
 - **Body:** Binary SQLite database file
 
-**Note:** If no snapshot is available yet, returns `503 Service Unavailable` with a `Retry-After` header.
+The snapshot contains all active lore with embeddings packed as float32 arrays.
+
+**If no snapshot is available yet:**
+
+Returns `503 Service Unavailable` with a `Retry-After` header indicating when to retry.
 
 ```bash
 # Check response headers
@@ -266,14 +413,14 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
       "context": "Architecture review for inventory service",
       "category": "ARCHITECTURAL_DECISION",
       "confidence": 0.85,
-      "embedding": [0.123, -0.456, 0.789],
+      "embedding": [0.123, -0.456, 0.789, ...],
       "source_id": "devcontainer-xyz789",
       "sources": ["devcontainer-xyz789", "devcontainer-abc123"],
       "validation_count": 3,
       "created_at": "2026-01-27T08:30:00Z",
       "updated_at": "2026-01-28T11:15:00Z",
       "last_validated_at": "2026-01-28T11:15:00Z",
-      "embedding_status": "ready"
+      "embedding_status": "complete"
     }
   ],
   "deleted_ids": [
@@ -283,7 +430,7 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 }
 ```
 
-**Important:** Use the `as_of` timestamp as the `since` parameter for your next delta request.
+**Important:** Use the `as_of` timestamp as the `since` parameter for your next delta request to ensure no changes are missed.
 
 **Timestamp Format:** RFC 3339 (e.g., `2026-01-28T10:00:00Z`)
 
@@ -332,7 +479,22 @@ curl -X POST https://engram.example.com/api/v1/lore/feedback \
 
 - `validation_count` only appears for `helpful` feedback
 - Confidence is capped at 1.0 and floored at 0.0
-- `not_relevant` feedback has no effect on confidence
+- `not_relevant` feedback has no effect on confidence (no penalty for context mismatch)
+
+---
+
+### Delete Lore
+
+Soft-delete a lore entry. The entry is marked as deleted but retained for delta sync.
+
+**Request:**
+
+```bash
+curl -X DELETE https://engram.example.com/api/v1/lore/01HQ5K9X2YPZV3CMWN8BTRFJ4G \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:** `204 No Content`
 
 ---
 
@@ -393,6 +555,8 @@ When the snapshot isn't ready:
 
 Check the `Retry-After` header for wait time in seconds.
 
+See [Error Reference](errors.md) for the complete list of error types.
+
 ## Best Practices
 
 ### Batch Size
@@ -406,8 +570,8 @@ Check the `Retry-After` header for wait time in seconds.
 | Event | Recommended Action |
 |-------|-------------------|
 | Client startup | Full snapshot bootstrap |
-| Task completion | Incremental sync |
-| Every 5-60 minutes | Periodic incremental sync |
+| Task/session completion | Incremental sync (push lore + feedback) |
+| Every 5-60 minutes | Periodic incremental sync (pull delta) |
 | Client shutdown | Flush all pending operations |
 
 ### Shutdown Flush
@@ -437,6 +601,28 @@ For transient errors (500, 503):
 3. Maximum 3-5 retry attempts
 4. Log failures for debugging
 
+```python
+import time
+import requests
+
+def make_request_with_retry(url, headers, max_retries=3):
+    for attempt in range(max_retries):
+        response = requests.get(url, headers=headers)
+
+        if response.status_code == 503:
+            retry_after = int(response.headers.get('Retry-After', 60))
+            time.sleep(retry_after)
+            continue
+
+        if response.status_code == 500:
+            time.sleep(2 ** attempt)  # Exponential backoff
+            continue
+
+        return response
+
+    raise Exception("Max retries exceeded")
+```
+
 ### Embedding Model Compatibility
 
 Before syncing, verify embedding model matches:
@@ -446,8 +632,9 @@ local_model="text-embedding-3-small"
 remote_model=$(curl -s https://engram.example.com/api/v1/health | jq -r '.embedding_model')
 
 if [ "$local_model" != "$remote_model" ]; then
-  echo "Warning: Model mismatch. Consider full re-bootstrap."
+  echo "Warning: Model mismatch. Semantic search quality may degrade."
+  echo "Consider downloading a fresh snapshot."
 fi
 ```
 
-If models differ, semantic search quality may degrade. Consider downloading a fresh snapshot.
+If models differ, semantic search results may be inconsistent. Download a fresh snapshot to re-index with consistent embeddings.

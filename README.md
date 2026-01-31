@@ -1,51 +1,302 @@
 # Engram
 
-Central Lore Service for AI agent experiential knowledge persistence and synchronization.
+__A physical alteration thought to occur in living neural tissue in response to stimuli, posited as an explanation for memory.__
 
-## Overview
+**Central Memory for AI Agent Lore**
 
-Engram enables AI agents to accumulate, persist, and recall experiential lore across sessions, projects, and distributed development environments.
+Engram enables AI agents to accumulate, persist, and recall experiential knowledge across sessions, projects, and distributed development environments. When an agent learns something valuable—a debugging insight, an architectural gotcha, a testing strategy—Engram preserves that knowledge and makes it available to all connected agents.
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         AI Agent Workflow                           │
+│                                                                     │
+│   Agent discovers insight  →  Records lore  →  Syncs to Engram     │
+│   Agent starts new task    ←  Recalls lore  ←  Queries local DB    │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
+│  Dev Container  │       │     Engram      │       │  Dev Container  │
+│   (Agent A)     │       │  Central Lore   │       │   (Agent B)     │
+│                 │       │    Service      │       │                 │
+│ ┌─────────────┐ │       │ ┌─────────────┐ │       │ ┌─────────────┐ │
+│ │   Recall    │─┼──sync─┼▶│    Lore     │◀┼─sync──┼─│   Recall    │ │
+│ │  (client)   │◀┼───────┼─│   Store     │─┼───────┼▶│  (client)   │ │
+│ └─────────────┘ │       │ └─────────────┘ │       │ └─────────────┘ │
+└─────────────────┘       └─────────────────┘       └─────────────────┘
+```
 
 | Term | Role | Description |
 |------|------|-------------|
-| **Engram** | Central service | Where lore is stored and synchronized |
-| **Recall** | Local client | How agents retrieve and contribute lore (separate repository) |
-| **Lore** | The knowledge | Individual learnings — the substance itself |
+| **Engram** | Central service | Stores, indexes, and synchronizes lore across environments |
+| **Recall** | Local client | Agent-side library for recording and querying lore |
+| **Lore** | The knowledge | Individual learnings with semantic embeddings for search |
+
+## Key Features
+
+- **Semantic Search** — Find relevant knowledge using meaning, not just keywords
+- **Confidence Scoring** — Lore quality improves through agent feedback
+- **Automatic Deduplication** — Semantically similar entries merge intelligently
+- **Delta Synchronization** — Efficient sync keeps all environments current
+- **Background Workers** — Embedding generation, confidence decay, and snapshots run automatically
+
+## Example Use Flow with Agents
+
+The following example shows how agents can integrate with Recall to maintain persistent project memory across the development pipeline.
+
+### Agent Roles
+
+| Agent | Role | Recall Usage |
+|-------|------|--------------|
+| **Architect** | Architecture & Design | Queries patterns/decisions, records ADRs, runs feedback-loop to harvest validated learnings |
+| **Developer** | TDD Implementation | Queries friction points/edge cases, provides feedback on lore usefulness |
+| **Code Reviewer** | Code Review | Queries testing strategies/quality patterns, provides feedback |
+| **Refactorer** | Refactoring | Queries refactoring patterns, triggers sync before merge |
+
+### Information Flow
+
+```
+                    ┌───────────────────────────────────┐
+                    │            ENGRAM                 │
+                    │      (Lore Knowledge Base)        │
+                    └──────────────┬────────────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              │ recall_query       │ recall_sync        │ recall_record
+              ▼                    ▲                    ▲
+    ┌──────────────────┐           │                    │
+    │ Architect Agent  │───────────┼────────────────────┤
+    │ query → feedback │           │                    │ (ADRs + feedback-loop)
+    └────────┬─────────┘           │                    │
+             │                     │                    │
+             ▼                     │                    │
+    ┌──────────────────┐           │                    │
+    │ Developer Agent  │           │                    │
+    │ query → feedback │           │                    │
+    └────────┬─────────┘           │                    │
+             │                     │                    │
+             ▼                     │                    │
+    ┌──────────────────┐           │                    │
+    │ Review Agent     │           │                    │
+    │ query → feedback │           │                    │
+    └────────┬─────────┘           │                    │
+             │                     │                    │
+             ▼                     │                    │
+    ┌──────────────────┐           │                    │
+    │ Refactor Agent   │───────────┘                    │
+    │ query → feedback │ (sync at deliver)              │
+    └────────┬─────────┘                                │
+             │                                          │
+             ▼ (merge)                                  │
+    ┌─────────────────┐                                 │
+    │ Architect Agent │─────────────────────────────────┘
+    │ feedback-loop   │ (record validated learnings)
+    └─────────────────┘
+```
+
+### Workflow Integration
+
+1. **Query at workflow start** — Each agent queries Engram for relevant lore before beginning work
+2. **Feedback at workflow end** — Agents report which retrieved lore was helpful, not relevant, or incorrect
+3. **Record only validated learnings** — Clario's feedback-loop records learnings only after implementation validates them
+4. **Sync at natural boundaries** — Hon triggers sync before merge to persist all feedback
+
+This design ensures:
+- All agents benefit from accumulated project knowledge
+- Relevance signals continuously improve retrieval quality
+- Only implementation-validated learnings enter the knowledge base
+- No speculative or hypothetical knowledge pollutes the lore
+
+## Installation
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install hyperengineering/tap/engram
+```
+
+### Download Binary
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/hyperengineering/engram/releases):
+
+```bash
+# Linux (amd64)
+curl -LO https://github.com/hyperengineering/engram/releases/latest/download/engram_linux_amd64.tar.gz
+tar -xzf engram_linux_amd64.tar.gz
+sudo mv engram /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -LO https://github.com/hyperengineering/engram/releases/latest/download/engram_darwin_arm64.tar.gz
+tar -xzf engram_darwin_arm64.tar.gz
+sudo mv engram /usr/local/bin/
+```
+
+### Docker
+
+```bash
+docker pull ghcr.io/hyperengineering/engram:latest
+
+docker run -p 8080:8080 \
+  -e OPENAI_API_KEY="sk-..." \
+  -e ENGRAM_API_KEY="your-secret-key" \
+  -v engram_data:/data \
+  ghcr.io/hyperengineering/engram:latest
+```
+
+### Build from Source
+
+Requires Go 1.23+:
+
+```bash
+git clone https://github.com/hyperengineering/engram.git
+cd engram
+make build
+./dist/engram
+```
 
 ## Quick Start
 
-### Prerequisites
+1. **Set required environment variables**
 
-- Go 1.23+
-- OpenAI API key (for embeddings)
+   ```bash
+   export OPENAI_API_KEY="sk-your-openai-api-key"    # For embedding generation
+   export ENGRAM_API_KEY="your-secret-api-key"       # For client authentication
+   ```
 
-### Local Development
+2. **Start the service**
 
-```bash
-# Clone the repository
-git clone https://github.com/hyperengineering/engram.git
-cd engram
+   ```bash
+   engram
+   ```
 
-# Install dependencies
-go mod download
+3. **Verify it's running**
 
-# Copy environment configuration
-cp .env.example .env
-# Edit .env with your API keys
+   ```bash
+   curl http://localhost:8080/api/v1/health
+   ```
 
-# Run tests
-make test
+   Expected response:
+   ```json
+   {
+     "status": "healthy",
+     "version": "1.0.0",
+     "embedding_model": "text-embedding-3-small",
+     "lore_count": 0,
+     "last_snapshot": null
+   }
+   ```
 
-# Build
-make build
+4. **Record your first lore entry**
 
-# Run the service
-./engram
+   ```bash
+   curl -X POST http://localhost:8080/api/v1/lore \
+     -H "Authorization: Bearer $ENGRAM_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "source_id": "my-environment",
+       "lore": [{
+         "content": "Always verify queue consumer idempotency in integration tests",
+         "context": "Discovered while debugging flaky test suite",
+         "category": "TESTING_STRATEGY",
+         "confidence": 0.80
+       }]
+     }'
+   ```
+
+## How Recall Clients Use Engram
+
+[Recall](https://github.com/hyperengineering/recall) is the client library agents use to interact with Engram. It maintains a local database replica for fast semantic search and handles synchronization automatically.
+
+**Typical agent workflow:**
+
+1. **Bootstrap** — On startup, Recall downloads a snapshot from Engram
+2. **Query** — During tasks, the agent searches local lore for relevant knowledge
+3. **Record** — When the agent learns something new, it records lore locally
+4. **Feedback** — After using recalled knowledge, the agent reports if it was helpful
+5. **Sync** — Periodically, Recall pushes new lore and pulls updates from Engram
+
+```go
+// Initialize Recall client
+client, _ := recall.New(recall.Config{
+    EngramURL: "https://engram.example.com",
+    APIKey:    os.Getenv("ENGRAM_API_KEY"),
+    SourceID:  "devcontainer-abc123",
+})
+
+// Query for relevant lore
+results, _ := client.Query(recall.QueryParams{
+    Query: "handling race conditions in message queues",
+    Limit: 5,
+})
+
+// Record new learning
+client.Record(recall.RecordParams{
+    Content:    "Consumer acknowledgments should use transactions",
+    Context:    "Debugging message loss in production",
+    Category:   "DEPENDENCY_BEHAVIOR",
+    Confidence: 0.85,
+})
+
+// Provide feedback on recalled lore
+client.Feedback(recall.FeedbackParams{
+    Helpful:     []string{"L1", "L2"},
+    NotRelevant: []string{"L3"},
+})
 ```
 
-### Using Devcontainer
+## API Overview
 
-Open the repository in VS Code with the Dev Containers extension installed. The container will automatically set up the development environment.
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/health` | GET | Service health and metadata |
+| `/api/v1/stats` | GET | Extended system metrics |
+| `/api/v1/lore` | POST | Ingest lore entries |
+| `/api/v1/lore/{id}` | DELETE | Soft-delete a lore entry |
+| `/api/v1/lore/snapshot` | GET | Download full database snapshot |
+| `/api/v1/lore/delta` | GET | Get changes since timestamp |
+| `/api/v1/lore/feedback` | POST | Submit feedback on lore quality |
+
+All endpoints except `/health` and `/stats` require Bearer token authentication.
+
+## Lore Categories
+
+| Category | Description |
+|----------|-------------|
+| `ARCHITECTURAL_DECISION` | High-level system design choices |
+| `PATTERN_OUTCOME` | Results of applying design patterns |
+| `INTERFACE_LESSON` | API and contract design insights |
+| `EDGE_CASE_DISCOVERY` | Unexpected behaviors found in testing |
+| `IMPLEMENTATION_FRICTION` | Design-to-code translation difficulties |
+| `TESTING_STRATEGY` | Testing approach insights |
+| `DEPENDENCY_BEHAVIOR` | Library and framework gotchas |
+| `PERFORMANCE_INSIGHT` | Performance characteristics and optimizations |
+
+## Running as a System Service
+
+For production deployments, run Engram as a systemd service:
+
+```bash
+# Install via package (recommended)
+sudo dpkg -i engram_1.0.0_linux_amd64.deb
+
+# Configure API keys
+sudo nano /etc/engram/environment
+
+# Start and enable
+sudo systemctl enable --now engram
+```
+
+See [Systemd Setup Guide](docs/systemd-setup-guide.md) for detailed instructions.
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) — Installation and first steps
+- [Configuration](docs/configuration.md) — All configuration options
+- [API Usage](docs/api-usage.md) — Endpoint examples and workflows
+- [Systemd Setup](docs/systemd-setup-guide.md) — Running as a Linux service
+- [Error Reference](docs/errors.md) — Error types and troubleshooting
+- [Technical Design](docs/engram.md) — Architecture and design decisions
 
 ## Project Structure
 
@@ -59,90 +310,10 @@ engram/
 │   ├── store/            # SQLite lore database operations
 │   ├── types/            # Domain types
 │   ├── validation/       # Input validation
-│   └── worker/           # Background workers (embedding retry, decay, snapshot)
+│   └── worker/           # Background workers
 ├── migrations/           # Database migrations
-├── docs/                 # Documentation
-└── .devcontainer/        # Development container configuration
+└── docs/                 # Documentation
 ```
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/health` | GET | Health check and service status |
-| `/api/v1/lore` | POST | Ingest lore entries |
-| `/api/v1/lore/{id}` | DELETE | Soft-delete a lore entry |
-| `/api/v1/lore/snapshot` | GET | Download database snapshot |
-| `/api/v1/lore/delta` | GET | Get changes since timestamp |
-| `/api/v1/lore/feedback` | POST | Submit feedback on lore quality |
-
-See [docs/openapi.yaml](docs/openapi.yaml) for the complete OpenAPI specification.
-
-## Background Workers
-
-Engram runs several background workers:
-
-| Worker | Interval | Purpose |
-|--------|----------|---------|
-| Embedding Retry | 30s | Retry failed embedding generations |
-| Confidence Decay | 24h | Decay confidence for stale lore |
-| Snapshot | 1h | Generate point-in-time database snapshots |
-
-## Configuration
-
-Environment variables:
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `ENGRAM_ADDRESS` | No | `0.0.0.0:8080` | Server listen address |
-| `ENGRAM_DB_PATH` | No | `./data/lore.db` | SQLite database path |
-| `OPENAI_API_KEY` | Yes | — | OpenAI API key for embeddings |
-| `OPENAI_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model |
-| `ENGRAM_API_KEY` | Yes | — | API key for authentication |
-| `ENGRAM_LOG_LEVEL` | No | `info` | Log level (debug, info, warn, error) |
-
-See [docs/configuration.md](docs/configuration.md) for detailed configuration options.
-
-## Deployment
-
-Engram can be deployed to any platform that supports Docker containers or Go binaries.
-
-### Docker
-
-```bash
-docker build -t engram .
-docker run -p 8080:8080 \
-  -e OPENAI_API_KEY=sk-... \
-  -e ENGRAM_API_KEY=... \
-  -v engram_data:/data \
-  engram
-```
-
-### Binary
-
-```bash
-# Build for your platform
-make build
-
-# Run with environment variables
-OPENAI_API_KEY=sk-... ENGRAM_API_KEY=... ./engram
-```
-
-Ensure persistent storage is configured for the SQLite database path (`ENGRAM_DB_PATH`).
-
-## Client Library
-
-The Recall client library is maintained in a separate repository:
-
-- **Repository:** [github.com/hyperengineering/recall](https://github.com/hyperengineering/recall)
-
-## Documentation
-
-- [Getting Started](docs/getting-started.md) — Quick start guide
-- [API Usage](docs/api-usage.md) — API examples and patterns
-- [Configuration](docs/configuration.md) — Configuration reference
-- [Error Handling](docs/errors.md) — Error codes and troubleshooting
-- [Technical Design](docs/engram.md) — Full architecture document
 
 ## License
 

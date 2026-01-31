@@ -2,6 +2,18 @@
 
 Complete reference for all Engram configuration options.
 
+## Minimal Configuration
+
+To run Engram, you only need two environment variables:
+
+```bash
+export OPENAI_API_KEY="sk-your-openai-api-key"
+export ENGRAM_API_KEY="your-secret-api-key"
+engram
+```
+
+Everything else has sensible defaults. This section covers all available options for production tuning.
+
 ## Configuration Sources
 
 Engram loads configuration from multiple sources with the following precedence (highest to lowest):

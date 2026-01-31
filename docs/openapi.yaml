@@ -627,6 +627,7 @@ components:
         - active_lore
         - deleted_lore
         - embedding_stats
+        - snapshot_stats
         - category_stats
         - quality_stats
         - unique_source_count
@@ -649,6 +650,8 @@ components:
           example: 25
         embedding_stats:
           $ref: '#/components/schemas/EmbeddingStats'
+        snapshot_stats:
+          $ref: '#/components/schemas/SnapshotStats'
         category_stats:
           type: object
           additionalProperties:
@@ -669,8 +672,9 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Timestamp of last snapshot generation
+          description: "Deprecated: Use snapshot_stats.generated_at. Timestamp of last snapshot generation."
           example: "2026-01-30T14:30:00Z"
+          deprecated: true
         last_decay:
           type: string
           format: date-time
@@ -682,6 +686,47 @@ components:
           format: date-time
           description: Timestamp when these stats were computed
           example: "2026-01-30T15:45:32Z"
+
+    SnapshotStats:
+      type: object
+      description: Observability metrics for the current database snapshot
+      required:
+        - lore_count
+        - size_bytes
+        - age_seconds
+        - pending_entries
+        - available
+      properties:
+        lore_count:
+          type: integer
+          format: int64
+          description: Number of active lore entries captured in the snapshot
+          example: 79
+        size_bytes:
+          type: integer
+          format: int64
+          description: Snapshot file size in bytes
+          example: 1048576
+        generated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the snapshot was generated
+          example: "2026-01-31T08:18:54Z"
+        age_seconds:
+          type: integer
+          format: int64
+          description: Seconds elapsed since snapshot generation
+          example: 3282
+        pending_entries:
+          type: integer
+          format: int64
+          description: Lore entries ingested since last snapshot (active_lore - lore_count). High values indicate stale snapshot.
+          example: 45
+        available:
+          type: boolean
+          description: Whether a snapshot exists
+          example: true
 
     EmbeddingStats:
       type: object
