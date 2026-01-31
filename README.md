@@ -248,6 +248,8 @@ client.Feedback(recall.FeedbackParams{
 
 ## API Overview
 
+### Core Endpoints
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/health` | GET | Service health and metadata |
@@ -258,7 +260,19 @@ client.Feedback(recall.FeedbackParams{
 | `/api/v1/lore/delta` | GET | Get changes since timestamp |
 | `/api/v1/lore/feedback` | POST | Submit feedback on lore quality |
 
+### Multi-Store Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/stores` | GET | List all stores |
+| `/api/v1/stores` | POST | Create a new store |
+| `/api/v1/stores/{store_id}` | GET | Get store information |
+| `/api/v1/stores/{store_id}` | DELETE | Delete a store |
+| `/api/v1/stores/{store_id}/lore/*` | — | Store-scoped lore operations |
+
 All endpoints except `/health` and `/stats` require Bearer token authentication.
+
+Store-scoped lore operations mirror the core `/lore/*` endpoints but operate on a specific store. See the [Multi-Store Guide](docs/multi-store.md) for details.
 
 ## Lore Categories
 
