@@ -20,6 +20,7 @@ type Config struct {
 	Worker        WorkerConfig        `yaml:"worker"`
 	Log           LogConfig           `yaml:"log"`
 	Deduplication DeduplicationConfig `yaml:"deduplication"`
+	Stores        StoresConfig        `yaml:"stores"`
 }
 
 // ServerConfig contains HTTP server settings.
@@ -65,6 +66,11 @@ type LogConfig struct {
 type DeduplicationConfig struct {
 	Enabled             bool    `yaml:"enabled"`
 	SimilarityThreshold float64 `yaml:"similarity_threshold"`
+}
+
+// StoresConfig contains multi-store settings.
+type StoresConfig struct {
+	RootPath string `yaml:"root_path"`
 }
 
 // GetDeduplicationEnabled returns whether deduplication is enabled.
@@ -179,6 +185,9 @@ func newDefaults() *Config {
 			Enabled:             true,
 			SimilarityThreshold: 0.92,
 		},
+		Stores: StoresConfig{
+			RootPath: "~/.engram/stores",
+		},
 	}
 }
 
@@ -282,6 +291,11 @@ func applyEnvOverrides(cfg *Config) {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Deduplication.SimilarityThreshold = f
 		}
+	}
+
+	// Stores
+	if v := os.Getenv("ENGRAM_STORES_ROOT"); v != "" {
+		cfg.Stores.RootPath = v
 	}
 }
 

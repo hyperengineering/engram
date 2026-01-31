@@ -32,6 +32,7 @@ func clearEnv(t *testing.T) {
 		"ENGRAM_DEV_MODE",
 		"ENGRAM_DEDUPLICATION_ENABLED",
 		"ENGRAM_SIMILARITY_THRESHOLD",
+		"ENGRAM_STORES_ROOT",
 		"ENGRAM_ADDRESS", // legacy
 	}
 	for _, v := range envVars {
@@ -674,5 +675,91 @@ deduplication:
 
 	if cfg.Deduplication.Enabled {
 		t.Error("Deduplication.Enabled should be false from YAML")
+	}
+}
+
+// --- Stores Config Tests (Story 7.1) ---
+
+// Test: Stores.RootPath default value
+func TestConfig_StoresRootPath_Default(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Stores.RootPath != "~/.engram/stores" {
+		t.Errorf("Stores.RootPath = %q, want %q", cfg.Stores.RootPath, "~/.engram/stores")
+	}
+}
+
+// Test: ENGRAM_STORES_ROOT env var overrides default
+func TestConfig_StoresRootPath_EnvOverride(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+	os.Setenv("ENGRAM_STORES_ROOT", "/custom/stores/path")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Stores.RootPath != "/custom/stores/path" {
+		t.Errorf("Stores.RootPath = %q, want %q", cfg.Stores.RootPath, "/custom/stores/path")
+	}
+}
+
+// Test: Stores.RootPath from YAML file
+func TestConfig_StoresRootPath_FromYAML(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	yamlContent := `
+stores:
+  root_path: /yaml/stores
+`
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := LoadFromFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.Stores.RootPath != "/yaml/stores" {
+		t.Errorf("Stores.RootPath = %q, want %q", cfg.Stores.RootPath, "/yaml/stores")
+	}
+}
+
+// Test: Env var overrides YAML for Stores.RootPath
+func TestConfig_StoresRootPath_EnvOverridesYAML(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	yamlContent := `
+stores:
+  root_path: /yaml/stores
+`
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	os.Setenv("ENGRAM_CONFIG_PATH", configPath)
+	os.Setenv("ENGRAM_STORES_ROOT", "/env/stores") // Should override YAML
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Stores.RootPath != "/env/stores" {
+		t.Errorf("Stores.RootPath = %q, want %q (env override)", cfg.Stores.RootPath, "/env/stores")
 	}
 }
