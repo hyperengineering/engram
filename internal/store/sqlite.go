@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hyperengineering/engram/internal/types"
@@ -235,12 +236,46 @@ func SetLastDecay(t time.Time) {
 	lastDecay = &t
 }
 
+// snapshotMeta holds observability data captured at snapshot generation.
+type snapshotMeta struct {
+	loreCount   int64
+	sizeBytes   int64
+	generatedAt time.Time
+}
+
+// currentSnapshotMeta holds the current snapshot metadata (package level for stats access)
+var currentSnapshotMeta atomic.Pointer[snapshotMeta]
+
+// SetSnapshotMeta updates the current snapshot metadata.
+// Called after successful snapshot generation.
+func SetSnapshotMeta(loreCount, sizeBytes int64, generatedAt time.Time) {
+	currentSnapshotMeta.Store(&snapshotMeta{
+		loreCount:   loreCount,
+		sizeBytes:   sizeBytes,
+		generatedAt: generatedAt,
+	})
+}
+
+// GetSnapshotMeta returns the current snapshot metadata.
+// Returns nil if no snapshot has been generated.
+func GetSnapshotMeta() *snapshotMeta {
+	return currentSnapshotMeta.Load()
+}
+
+// ClearSnapshotMeta clears the current snapshot metadata.
+// Primarily used for testing.
+func ClearSnapshotMeta() {
+	currentSnapshotMeta.Store(nil)
+}
+
 // GetExtendedStats returns comprehensive system metrics for monitoring.
 func (s *SQLiteStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStats, error) {
+	now := time.Now().UTC()
+
 	stats := &types.ExtendedStats{
 		CategoryStats: make(map[string]int64),
-		StatsAsOf:     time.Now().UTC(),
-		LastSnapshot:  s.lastSnapshot,
+		StatsAsOf:     now,
+		LastSnapshot:  s.lastSnapshot, // Backward compatibility
 		LastDecay:     lastDecay,
 	}
 
@@ -307,6 +342,23 @@ func (s *SQLiteStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStat
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating category rows: %w", err)
+	}
+
+	// Build SnapshotStats from metadata
+	meta := GetSnapshotMeta()
+	if meta != nil {
+		stats.SnapshotStats = types.SnapshotStats{
+			LoreCount:      meta.loreCount,
+			SizeBytes:      meta.sizeBytes,
+			GeneratedAt:    &meta.generatedAt,
+			AgeSeconds:     int64(now.Sub(meta.generatedAt).Seconds()),
+			PendingEntries: stats.ActiveLore - meta.loreCount,
+			Available:      true,
+		}
+	} else {
+		stats.SnapshotStats = types.SnapshotStats{
+			Available: false,
+		}
 	}
 
 	return stats, nil
@@ -927,6 +979,14 @@ func (s *SQLiteStore) GenerateSnapshot(ctx context.Context) error {
 
 	start := time.Now()
 
+	// Query active lore count BEFORE snapshot (for observability)
+	var loreCount int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&loreCount)
+	if err != nil {
+		return fmt.Errorf("count lore for snapshot: %w", err)
+	}
+
 	// Ensure snapshot directory exists
 	snapshotDir := s.snapshotDir()
 	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
@@ -938,7 +998,7 @@ func (s *SQLiteStore) GenerateSnapshot(ctx context.Context) error {
 	finalPath := s.snapshotPath()
 
 	// Use VACUUM INTO for point-in-time backup (non-blocking to writers)
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s'", tempPath))
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s'", tempPath))
 	if err != nil {
 		// Clean up temp file on error
 		os.Remove(tempPath)
@@ -958,9 +1018,10 @@ func (s *SQLiteStore) GenerateSnapshot(ctx context.Context) error {
 		return fmt.Errorf("rename snapshot: %w", err)
 	}
 
-	// Update last snapshot timestamp
+	// Update last snapshot timestamp and metadata
 	now := time.Now().UTC()
 	s.lastSnapshot = &now
+	SetSnapshotMeta(loreCount, sizeBytes, now)
 
 	duration := time.Since(start)
 	slog.Info("snapshot generated",
@@ -968,6 +1029,7 @@ func (s *SQLiteStore) GenerateSnapshot(ctx context.Context) error {
 		"action", "snapshot_complete",
 		"duration_ms", duration.Milliseconds(),
 		"size_bytes", sizeBytes,
+		"lore_count", loreCount,
 	)
 
 	return nil

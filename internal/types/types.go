@@ -180,6 +180,28 @@ type StoreStats struct {
 	LastSnapshot *time.Time `json:"last_snapshot,omitempty"`
 }
 
+// SnapshotStats provides observability into the current snapshot state.
+type SnapshotStats struct {
+	// LoreCount is the number of active lore entries captured in the snapshot.
+	LoreCount int64 `json:"lore_count"`
+
+	// SizeBytes is the snapshot file size.
+	SizeBytes int64 `json:"size_bytes"`
+
+	// GeneratedAt is when the snapshot was created.
+	GeneratedAt *time.Time `json:"generated_at,omitempty"`
+
+	// AgeSeconds is seconds elapsed since generation (computed at response time).
+	AgeSeconds int64 `json:"age_seconds"`
+
+	// PendingEntries is active_lore minus snapshot lore_count.
+	// High values indicate stale snapshot requiring regeneration.
+	PendingEntries int64 `json:"pending_entries"`
+
+	// Available indicates whether a snapshot exists.
+	Available bool `json:"available"`
+}
+
 // ExtendedStats provides comprehensive system metrics for monitoring.
 type ExtendedStats struct {
 	// Lore counts
@@ -189,6 +211,9 @@ type ExtendedStats struct {
 
 	// Embedding pipeline health
 	EmbeddingStats EmbeddingStats `json:"embedding_stats"`
+
+	// Snapshot observability
+	SnapshotStats SnapshotStats `json:"snapshot_stats"`
 
 	// Knowledge distribution
 	CategoryStats map[string]int64 `json:"category_stats"`
@@ -200,7 +225,7 @@ type ExtendedStats struct {
 	UniqueSourceCount int64 `json:"unique_source_count"`
 
 	// Timestamps
-	LastSnapshot *time.Time `json:"last_snapshot,omitempty"`
+	LastSnapshot *time.Time `json:"last_snapshot,omitempty"` // Deprecated: Use SnapshotStats.GeneratedAt
 	LastDecay    *time.Time `json:"last_decay,omitempty"`
 	StatsAsOf    time.Time  `json:"stats_as_of"`
 }

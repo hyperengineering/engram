@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -4163,6 +4164,193 @@ func TestGetExtendedStats_IncludesTimestamps(t *testing.T) {
 	// StatsAsOf should be recent
 	if time.Since(stats.StatsAsOf) > time.Second {
 		t.Error("StatsAsOf should be recent")
+	}
+}
+
+func TestGetExtendedStats_SnapshotStatsNoSnapshot(t *testing.T) {
+	// Clear any existing snapshot meta
+	ClearSnapshotMeta()
+
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.SnapshotStats.Available {
+		t.Error("SnapshotStats.Available should be false when no snapshot exists")
+	}
+	if stats.SnapshotStats.LoreCount != 0 {
+		t.Errorf("SnapshotStats.LoreCount should be 0, got %d", stats.SnapshotStats.LoreCount)
+	}
+	if stats.SnapshotStats.GeneratedAt != nil {
+		t.Error("SnapshotStats.GeneratedAt should be nil when no snapshot exists")
+	}
+}
+
+func TestGetExtendedStats_SnapshotStatsWithSnapshot(t *testing.T) {
+	// Set up snapshot metadata
+	generatedAt := time.Now().UTC().Add(-2 * time.Second)
+	SetSnapshotMeta(100, 1048576, generatedAt)
+	defer ClearSnapshotMeta()
+
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Add some lore entries to test pending calculation
+	entries := []types.NewLoreEntry{
+		{Content: "test 1", Category: "TESTING_STRATEGY", Confidence: 0.5, SourceID: "test"},
+		{Content: "test 2", Category: "TESTING_STRATEGY", Confidence: 0.5, SourceID: "test"},
+		{Content: "test 3", Category: "TESTING_STRATEGY", Confidence: 0.5, SourceID: "test"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !stats.SnapshotStats.Available {
+		t.Error("SnapshotStats.Available should be true when snapshot exists")
+	}
+	if stats.SnapshotStats.LoreCount != 100 {
+		t.Errorf("SnapshotStats.LoreCount should be 100, got %d", stats.SnapshotStats.LoreCount)
+	}
+	if stats.SnapshotStats.SizeBytes != 1048576 {
+		t.Errorf("SnapshotStats.SizeBytes should be 1048576, got %d", stats.SnapshotStats.SizeBytes)
+	}
+	if stats.SnapshotStats.GeneratedAt == nil {
+		t.Error("SnapshotStats.GeneratedAt should not be nil")
+	}
+	// Age should be approximately 2 seconds
+	if stats.SnapshotStats.AgeSeconds < 1 || stats.SnapshotStats.AgeSeconds > 5 {
+		t.Errorf("SnapshotStats.AgeSeconds should be ~2, got %d", stats.SnapshotStats.AgeSeconds)
+	}
+	// Pending entries = 3 active - 100 snapshot = -97 (snapshot has more than current)
+	// This is a valid scenario when entries are deleted after snapshot
+	expectedPending := stats.ActiveLore - 100
+	if stats.SnapshotStats.PendingEntries != expectedPending {
+		t.Errorf("SnapshotStats.PendingEntries should be %d, got %d", expectedPending, stats.SnapshotStats.PendingEntries)
+	}
+}
+
+func TestGetExtendedStats_SnapshotStatsBackwardCompat(t *testing.T) {
+	// Set up snapshot metadata
+	generatedAt := time.Now().UTC()
+	SetSnapshotMeta(50, 512000, generatedAt)
+	defer ClearSnapshotMeta()
+
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Also set the old lastSnapshot field
+	db.lastSnapshot = &generatedAt
+
+	stats, err := db.GetExtendedStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both should be set for backward compatibility
+	if stats.LastSnapshot == nil {
+		t.Error("LastSnapshot should still be set for backward compatibility")
+	}
+	if stats.SnapshotStats.GeneratedAt == nil {
+		t.Error("SnapshotStats.GeneratedAt should be set")
+	}
+}
+
+func TestGenerateSnapshot_CapturesMetadata(t *testing.T) {
+	// Create temp directory for snapshot
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	defer ClearSnapshotMeta()
+
+	// Add some lore entries
+	entries := []types.NewLoreEntry{
+		{Content: "test 1", Category: "TESTING_STRATEGY", Confidence: 0.5, SourceID: "test"},
+		{Content: "test 2", Category: "TESTING_STRATEGY", Confidence: 0.5, SourceID: "test"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate snapshot
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check metadata was captured
+	meta := GetSnapshotMeta()
+	if meta == nil {
+		t.Fatal("Snapshot metadata should be set after generation")
+	}
+
+	if meta.loreCount != 2 {
+		t.Errorf("Expected lore count 2, got %d", meta.loreCount)
+	}
+	if meta.sizeBytes == 0 {
+		t.Error("Size bytes should not be 0")
+	}
+	if time.Since(meta.generatedAt) > time.Second {
+		t.Error("Generated at should be recent")
+	}
+}
+
+func TestGenerateSnapshot_MetadataIncludesLoreCountInLog(t *testing.T) {
+	// This test verifies the lore count is available for logging
+	// The actual log output is tested implicitly by the metadata capture
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	defer ClearSnapshotMeta()
+
+	// Add entries
+	entries := []types.NewLoreEntry{
+		{Content: "entry 1", Category: "PATTERN_OUTCOME", Confidence: 0.6, SourceID: "src1"},
+		{Content: "entry 2", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "src1"},
+		{Content: "entry 3", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "src1"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = db.GenerateSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	meta := GetSnapshotMeta()
+	if meta.loreCount != 3 {
+		t.Errorf("Expected lore count 3 for logging, got %d", meta.loreCount)
 	}
 }
 
