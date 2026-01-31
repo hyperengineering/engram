@@ -2,15 +2,19 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/hyperengineering/engram/internal/multistore"
+	"github.com/hyperengineering/engram/internal/store"
 )
 
 const testAPIKey = "test-secret-key-12345"
@@ -751,5 +755,268 @@ func TestRecoveryMiddleware_PanicNoLeak(t *testing.T) {
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, secretMessage) {
 		t.Error("expected secret in logs for debugging purposes")
+	}
+}
+
+// --- Store Context Middleware Tests (Story 7.3) ---
+
+// mockStoreManager implements a minimal StoreManager interface for testing.
+type mockStoreManager struct {
+	stores map[string]*multistore.ManagedStore
+	err    error
+}
+
+func newMockStoreManager() *mockStoreManager {
+	return &mockStoreManager{
+		stores: make(map[string]*multistore.ManagedStore),
+	}
+}
+
+func (m *mockStoreManager) addStore(id string, s store.Store) {
+	m.stores[id] = &multistore.ManagedStore{
+		ID:    id,
+		Store: s,
+		Meta: &multistore.StoreMeta{
+			Created:      time.Now(),
+			LastAccessed: time.Now(),
+		},
+	}
+}
+
+func (m *mockStoreManager) GetStore(ctx context.Context, id string) (*multistore.ManagedStore, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	managed, ok := m.stores[id]
+	if !ok {
+		return nil, multistore.ErrStoreNotFound
+	}
+	return managed, nil
+}
+
+// TestStoreContextMiddleware_ValidStore tests that a valid store ID injects the store into context.
+func TestStoreContextMiddleware_ValidStore(t *testing.T) {
+	mgr := newMockStoreManager()
+	testStore := &mockStore{}
+	mgr.addStore("test-store", testStore)
+
+	var capturedStore store.Store
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		capturedStore, err = StoreFromContext(r.Context())
+		if err != nil {
+			t.Errorf("StoreFromContext failed: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := StoreContextMiddleware(mgr)
+
+	// Build router to populate URL params
+	router := chi.NewRouter()
+	router.Route("/stores/{store_id}/lore", func(r chi.Router) {
+		r.Use(middleware)
+		r.Post("/", innerHandler)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/stores/test-store/lore", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if capturedStore != testStore {
+		t.Error("captured store is not the expected store")
+	}
+}
+
+// TestStoreContextMiddleware_NotFound tests 404 when store doesn't exist.
+func TestStoreContextMiddleware_NotFound(t *testing.T) {
+	mgr := newMockStoreManager()
+	// No stores added
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for non-existent store")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := StoreContextMiddleware(mgr)
+
+	router := chi.NewRouter()
+	router.Route("/stores/{store_id}/lore", func(r chi.Router) {
+		r.Use(middleware)
+		r.Post("/", innerHandler)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/stores/nonexistent/lore", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	// Verify RFC 7807 response
+	var p Problem
+	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+		t.Fatalf("failed to unmarshal Problem: %v", err)
+	}
+	if p.Status != 404 {
+		t.Errorf("problem status = %d, want 404", p.Status)
+	}
+}
+
+// TestStoreContextMiddleware_InvalidID tests 400 for invalid store ID format.
+func TestStoreContextMiddleware_InvalidID(t *testing.T) {
+	mgr := newMockStoreManager()
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for invalid store ID")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := StoreContextMiddleware(mgr)
+
+	router := chi.NewRouter()
+	router.Route("/stores/{store_id}/lore", func(r chi.Router) {
+		r.Use(middleware)
+		r.Post("/", innerHandler)
+	})
+
+	// INVALID has uppercase letters, which is invalid
+	req := httptest.NewRequest(http.MethodPost, "/stores/INVALID/lore", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// TestStoreContextMiddleware_EncodedPath tests URL-encoded store IDs work correctly.
+func TestStoreContextMiddleware_EncodedPath(t *testing.T) {
+	mgr := newMockStoreManager()
+	testStore := &mockStore{}
+	mgr.addStore("org/project", testStore) // Store with slash in ID
+
+	var capturedStoreID string
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedStoreID = StoreIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := StoreContextMiddleware(mgr)
+
+	router := chi.NewRouter()
+	router.Route("/stores/{store_id}/lore", func(r chi.Router) {
+		r.Use(middleware)
+		r.Post("/", innerHandler)
+	})
+
+	// URL encode the slash: org%2Fproject
+	req := httptest.NewRequest(http.MethodPost, "/stores/org%2Fproject/lore", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if capturedStoreID != "org/project" {
+		t.Errorf("store ID = %q, want %q", capturedStoreID, "org/project")
+	}
+}
+
+// TestDefaultStoreMiddleware_InjectsDefault tests that default store is injected.
+func TestDefaultStoreMiddleware_InjectsDefault(t *testing.T) {
+	mgr := newMockStoreManager()
+	defaultStore := &mockStore{}
+	mgr.addStore(multistore.DefaultStoreID, defaultStore)
+
+	var capturedStore store.Store
+	var capturedStoreID string
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		capturedStore, err = StoreFromContext(r.Context())
+		if err != nil {
+			t.Errorf("StoreFromContext failed: %v", err)
+		}
+		capturedStoreID = StoreIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := DefaultStoreMiddleware(mgr)
+	handler := middleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodPost, "/lore", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if capturedStore != defaultStore {
+		t.Error("captured store is not the default store")
+	}
+	if capturedStoreID != multistore.DefaultStoreID {
+		t.Errorf("store ID = %q, want %q", capturedStoreID, multistore.DefaultStoreID)
+	}
+}
+
+// TestDefaultStoreMiddleware_Error tests error handling when default store unavailable.
+func TestDefaultStoreMiddleware_Error(t *testing.T) {
+	mgr := newMockStoreManager()
+	// Don't add default store - simulates error
+
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called when default store unavailable")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Suppress log output
+	var logBuf bytes.Buffer
+	handler := slog.NewTextHandler(&logBuf, nil)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	middleware := DefaultStoreMiddleware(mgr)
+	h := middleware(innerHandler)
+
+	req := httptest.NewRequest(http.MethodPost, "/lore", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+// TestStoreContextMiddleware_StoreIDInContext verifies store ID is added to context.
+func TestStoreContextMiddleware_StoreIDInContext(t *testing.T) {
+	mgr := newMockStoreManager()
+	testStore := &mockStore{}
+	mgr.addStore("my-test-store", testStore)
+
+	var capturedStoreID string
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedStoreID = StoreIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := StoreContextMiddleware(mgr)
+
+	router := chi.NewRouter()
+	router.Route("/stores/{store_id}/lore", func(r chi.Router) {
+		r.Use(middleware)
+		r.Post("/", innerHandler)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/stores/my-test-store/lore", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if capturedStoreID != "my-test-store" {
+		t.Errorf("store ID = %q, want %q", capturedStoreID, "my-test-store")
 	}
 }

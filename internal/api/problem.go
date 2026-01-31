@@ -52,6 +52,10 @@ var problemTypes = map[int]struct {
 		typeURI: "https://engram.dev/errors/conflict",
 		title:   "Conflict",
 	},
+	http.StatusForbidden: {
+		typeURI: "https://engram.dev/errors/forbidden",
+		title:   "Forbidden",
+	},
 }
 
 // WriteProblem writes an RFC 7807 Problem Details response.
@@ -108,6 +112,16 @@ func WriteProblemWithErrors(w http.ResponseWriter, r *http.Request, detail strin
 	if err := json.NewEncoder(w).Encode(p); err != nil {
 		slog.Error("failed to encode problem response", "error", err)
 	}
+}
+
+// WriteProblemConflict writes a 409 Conflict problem response.
+func WriteProblemConflict(w http.ResponseWriter, r *http.Request, detail string) {
+	WriteProblem(w, r, http.StatusConflict, detail)
+}
+
+// WriteProblemForbidden writes a 403 Forbidden problem response.
+func WriteProblemForbidden(w http.ResponseWriter, r *http.Request, detail string) {
+	WriteProblem(w, r, http.StatusForbidden, detail)
 }
 
 // MapStoreError converts domain errors to Problem Details responses.

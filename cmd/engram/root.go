@@ -14,6 +14,7 @@ import (
 	"github.com/hyperengineering/engram/internal/api"
 	"github.com/hyperengineering/engram/internal/config"
 	"github.com/hyperengineering/engram/internal/embedding"
+	"github.com/hyperengineering/engram/internal/multistore"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/worker"
 	"github.com/spf13/cobra"
@@ -85,9 +86,17 @@ func run(cmd *cobra.Command, args []string) error {
 		"enabled", cfg.Deduplication.Enabled,
 		"threshold", cfg.Deduplication.SimilarityThreshold)
 
-	// 7. Initialize HTTP router
-	handler := api.NewHandler(db, embedder, cfg.Auth.APIKey, Version)
-	router := api.NewRouter(handler)
+	// 7. Initialize multi-store support (Story 7.3)
+	storeManager, err := multistore.NewStoreManager(cfg.Stores.RootPath)
+	if err != nil {
+		return fmt.Errorf("initialize store manager: %w", err)
+	}
+	defer storeManager.Close()
+	slog.Info("store manager initialized", "root_path", cfg.Stores.RootPath)
+
+	// 8. Initialize HTTP router
+	handler := api.NewHandler(db, storeManager, embedder, cfg.Auth.APIKey, Version)
+	router := api.NewRouter(handler, storeManager)
 	slog.Info("router initialized")
 
 	// 8. Configure HTTP server

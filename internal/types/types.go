@@ -99,6 +99,7 @@ type HealthResponse struct {
 	EmbeddingModel string     `json:"embedding_model"`
 	LoreCount      int64      `json:"lore_count"`
 	LastSnapshot   *time.Time `json:"last_snapshot"`
+	StoreID        string     `json:"store_id,omitempty"` // Included when store parameter specified
 }
 
 // --- Architecture-aligned domain types (Story 1.1) ---

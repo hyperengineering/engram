@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/hyperengineering/engram/internal/multistore"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/types"
 )
@@ -385,6 +386,125 @@ func TestHealth_StoreErrorReturns500(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d for store error", w.Code, http.StatusInternalServerError)
+	}
+}
+
+// --- Health Endpoint Tests with Store Parameter (Story 7.3) ---
+
+func TestHealth_WithStoreParameter(t *testing.T) {
+	// Use real store manager with temp directory
+	tmpDir := t.TempDir()
+	mgr, err := multistore.NewStoreManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer mgr.Close()
+
+	// Create test store
+	_, err = mgr.CreateStore(context.Background(), "test-store", "Test store")
+	if err != nil {
+		t.Fatalf("CreateStore() error = %v", err)
+	}
+
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	defaultStore := &mockStore{stats: &types.StoreStats{LoreCount: 100}}
+	handler := NewHandler(defaultStore, mgr, embedder, "test-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health?store=test-store", nil)
+	w := httptest.NewRecorder()
+
+	handler.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.HealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Lore count from newly created store should be 0
+	if resp.LoreCount != 0 {
+		t.Errorf("lore_count = %d, want 0 (from new test store)", resp.LoreCount)
+	}
+
+	if resp.StoreID != "test-store" {
+		t.Errorf("store_id = %q, want %q", resp.StoreID, "test-store")
+	}
+}
+
+func TestHealth_WithStoreParameter_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := multistore.NewStoreManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer mgr.Close()
+
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	defaultStore := &mockStore{stats: &types.StoreStats{LoreCount: 100}}
+	handler := NewHandler(defaultStore, mgr, embedder, "test-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health?store=nonexistent", nil)
+	w := httptest.NewRecorder()
+
+	handler.Health(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHealth_WithStoreParameter_InvalidID(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := multistore.NewStoreManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer mgr.Close()
+
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	defaultStore := &mockStore{stats: &types.StoreStats{LoreCount: 100}}
+	handler := NewHandler(defaultStore, mgr, embedder, "test-key", "1.0.0")
+
+	// INVALID has uppercase letters, which is invalid
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health?store=INVALID", nil)
+	w := httptest.NewRecorder()
+
+	handler.Health(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHealth_WithoutStoreParameter_ReturnsDefault(t *testing.T) {
+	defaultStore := &mockStore{stats: &types.StoreStats{LoreCount: 100}}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(defaultStore, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	w := httptest.NewRecorder()
+
+	handler.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.HealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.LoreCount != 100 {
+		t.Errorf("lore_count = %d, want 100 (from default store)", resp.LoreCount)
+	}
+
+	// store_id should be omitted when not specified
+	if resp.StoreID != "" {
+		t.Errorf("store_id = %q, want empty (omitted)", resp.StoreID)
 	}
 }
 
@@ -1306,7 +1426,7 @@ func TestSnapshotEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, embedder, "api-key", "1.0.0")
+	handler := NewHandler(sqliteStore, nil, embedder, "api-key", "1.0.0")
 
 	// Make request
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
@@ -1569,7 +1689,7 @@ func TestDeltaEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, embedder, "api-key", "1.0.0")
+	handler := NewHandler(sqliteStore, nil, embedder, "api-key", "1.0.0")
 
 	// Make delta request
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since="+sinceBefore, nil)
@@ -1976,8 +2096,8 @@ func TestFlushDuringGracefulShutdown_FeedbackCompletes(t *testing.T) {
 	}
 	slowStore := &slowFeedbackStore{mockStore: baseStore, delay: 100 * time.Millisecond}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(slowStore, embedder, "test-key", "1.0.0")
-	router := NewRouter(handler)
+	handler := NewHandler(slowStore, nil, embedder, "test-key", "1.0.0")
+	router := NewRouter(handler, nil)
 
 	// Create a real HTTP server
 	srv := &http.Server{
@@ -2193,8 +2313,8 @@ func TestDeleteLore_StoreError(t *testing.T) {
 func TestDeleteLore_Unauthorized(t *testing.T) {
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(s, embedder, "secret-api-key", "1.0.0")
-	router := NewRouter(handler)
+	handler := NewHandler(s, nil, embedder, "secret-api-key", "1.0.0")
+	router := NewRouter(handler, nil)
 
 	// Request WITHOUT Authorization header
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
@@ -2558,7 +2678,7 @@ func TestFeedback_PerformanceWarningIncludesSourceID(t *testing.T) {
 	}
 	slowStore := &slowFeedbackStore{mockStore: baseStore, delay: 600 * time.Millisecond}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(slowStore, embedder, "api-key", "1.0.0")
+	handler := NewHandler(slowStore, nil, embedder, "api-key", "1.0.0")
 
 	body := `{
 		"source_id": "devcontainer-slow123",
@@ -2600,8 +2720,8 @@ func TestFeedback_PerformanceWarningIncludesSourceID(t *testing.T) {
 func TestDeleteLore_RateLimited(t *testing.T) {
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(s, embedder, "test-api-key", "1.0.0")
-	router := NewRouter(handler)
+	handler := NewHandler(s, nil, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, nil)
 
 	// Make many rapid requests to trigger rate limiting
 	// The rate limiter allows 100 burst, so we need >100 to trigger
@@ -2670,8 +2790,8 @@ func TestDeleteEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, embedder, "test-api-key", "1.0.0")
-	router := NewRouter(handler)
+	handler := NewHandler(sqliteStore, nil, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, nil)
 
 	// Make DELETE request
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/lore/"+entryID, nil)
@@ -2735,8 +2855,8 @@ func TestStatsEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, embedder, "test-api-key", "1.0.0")
-	router := NewRouter(handler)
+	handler := NewHandler(sqliteStore, nil, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, nil)
 
 	// Make GET request WITHOUT auth (stats is public)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
@@ -2802,8 +2922,8 @@ func TestStatsEndpoint_NoAuthRequired(t *testing.T) {
 		},
 	}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, embedder, "secret-api-key", "1.0.0")
-	router := NewRouter(handler)
+	handler := NewHandler(s, nil, embedder, "secret-api-key", "1.0.0")
+	router := NewRouter(handler, nil)
 
 	// Make GET request WITHOUT auth header
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)

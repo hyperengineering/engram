@@ -42,14 +42,18 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/hyperengineering/engram/internal/multistore"
 )
 
 // GetRequestID extracts the request ID from context.
@@ -168,6 +172,77 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// StoreGetter provides an interface for retrieving stores.
+// This allows the middleware to work with both the real StoreManager
+// and test mocks.
+type StoreGetter interface {
+	GetStore(ctx context.Context, id string) (*multistore.ManagedStore, error)
+}
+
+// StoreContextMiddleware creates middleware that resolves store from URL path.
+// Injects the resolved store into the request context.
+// Returns 404 if store doesn't exist, 400 if store ID is invalid.
+func StoreContextMiddleware(mgr StoreGetter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			storeID := chi.URLParam(r, "store_id")
+
+			// URL decode (handles org%2Fproject -> org/project)
+			decodedID, err := url.PathUnescape(storeID)
+			if err != nil {
+				WriteProblem(w, r, http.StatusBadRequest, "Invalid store ID encoding")
+				return
+			}
+
+			// Validate store ID format
+			if err := multistore.ValidateStoreID(decodedID); err != nil {
+				WriteProblem(w, r, http.StatusBadRequest, err.Error())
+				return
+			}
+
+			// Get store from manager
+			managed, err := mgr.GetStore(r.Context(), decodedID)
+			if err != nil {
+				if errors.Is(err, multistore.ErrStoreNotFound) {
+					WriteProblem(w, r, http.StatusNotFound, "Store not found")
+					return
+				}
+				slog.Error("store context middleware error",
+					"store_id", decodedID, "error", err)
+				WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
+				return
+			}
+
+			// Inject store and store ID into context
+			ctx := WithStore(r.Context(), managed.Store)
+			ctx = WithStoreID(ctx, decodedID)
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// DefaultStoreMiddleware injects the default store into context.
+// Used for backward-compatible routes that don't specify a store.
+func DefaultStoreMiddleware(mgr StoreGetter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			managed, err := mgr.GetStore(r.Context(), multistore.DefaultStoreID)
+			if err != nil {
+				slog.Error("default store middleware error", "error", err)
+				WriteProblem(w, r, http.StatusInternalServerError,
+					"Internal error: default store unavailable")
+				return
+			}
+
+			ctx := WithStore(r.Context(), managed.Store)
+			ctx = WithStoreID(ctx, multistore.DefaultStoreID)
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 // DeleteRateLimiter provides rate limiting for DELETE operations.

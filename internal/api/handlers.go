@@ -7,10 +7,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/hyperengineering/engram/internal/embedding"
+	"github.com/hyperengineering/engram/internal/multistore"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/types"
 	"github.com/hyperengineering/engram/internal/validation"
@@ -32,28 +37,69 @@ func extractSourceID(r *http.Request) string {
 
 // Handler implements the API handlers
 type Handler struct {
-	store    store.Store
-	embedder embedding.Embedder
-	apiKey   string
-	version  string
+	store        store.Store
+	storeManager *multistore.StoreManager
+	embedder     embedding.Embedder
+	apiKey       string
+	version      string
 }
 
 // NewHandler creates a new Handler with store.Store interface
-func NewHandler(s store.Store, e embedding.Embedder, apiKey, version string) *Handler {
+// The storeManager parameter can be nil for backward compatibility.
+func NewHandler(s store.Store, mgr *multistore.StoreManager, e embedding.Embedder, apiKey, version string) *Handler {
 	return &Handler{
-		store:    s,
-		embedder: e,
-		apiKey:   apiKey,
-		version:  version,
+		store:        s,
+		storeManager: mgr,
+		embedder:     e,
+		apiKey:       apiKey,
+		version:      version,
 	}
 }
 
-// Health returns the health status
+// Health returns the health status.
+// Accepts optional ?store={store_id} query parameter for store-specific stats.
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.store.GetStats(r.Context())
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
+	storeID := r.URL.Query().Get("store")
+
+	var stats *types.StoreStats
+	var err error
+
+	if storeID != "" {
+		// Store-specific health
+		if err := multistore.ValidateStoreID(storeID); err != nil {
+			WriteProblem(w, r, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		if h.storeManager == nil {
+			WriteProblem(w, r, http.StatusServiceUnavailable, "Multi-store support not configured")
+			return
+		}
+
+		managed, err := h.storeManager.GetStore(r.Context(), storeID)
+		if err != nil {
+			if errors.Is(err, multistore.ErrStoreNotFound) {
+				WriteProblem(w, r, http.StatusNotFound, "Store not found")
+				return
+			}
+			slog.Error("health store lookup failed", "store_id", storeID, "error", err)
+			WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
+			return
+		}
+		stats, err = managed.Store.GetStats(r.Context())
+		if err != nil {
+			slog.Error("health stats failed", "store_id", storeID, "error", err)
+			WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
+			return
+		}
+	} else {
+		// Default/global health (backward compatible)
+		stats, err = h.store.GetStats(r.Context())
+		if err != nil {
+			slog.Error("health stats failed", "error", err)
+			WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
+			return
+		}
 	}
 
 	resp := types.HealthResponse{
@@ -62,6 +108,11 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		EmbeddingModel: h.embedder.ModelName(),
 		LoreCount:      stats.LoreCount,
 		LastSnapshot:   stats.LastSnapshot,
+	}
+
+	// Include store_id in response if specified
+	if storeID != "" {
+		resp.StoreID = storeID
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -86,9 +137,25 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
-// IngestLore handles POST /api/v1/lore
+// getStoreForRequest extracts the store from context or falls back to h.store.
+// This supports both store-scoped routes (store in context) and backward-compatible
+// routes (direct h.store usage when mgr is nil).
+func (h *Handler) getStoreForRequest(r *http.Request) store.Store {
+	s, err := StoreFromContext(r.Context())
+	if err == nil {
+		return s
+	}
+	// Fall back to h.store for backward compatibility
+	return h.store
+}
+
+// IngestLore handles POST /api/v1/lore and POST /api/v1/stores/{store_id}/lore
 func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	storeID := StoreIDFromContext(r.Context())
+
+	// Get store (from context if available, otherwise fallback to h.store)
+	s := h.getStoreForRequest(r)
 
 	var req types.IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -126,11 +193,12 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 
 	var accepted, merged int
 	if len(validEntries) > 0 {
-		result, err := h.store.IngestLore(r.Context(), validEntries)
+		result, err := s.IngestLore(r.Context(), validEntries)
 		if err != nil {
 			slog.Error("ingest failed",
 				"component", "api",
 				"action", "ingest_failed",
+				"store_id", storeID,
 				"source_id", req.SourceID,
 				"remote_addr", r.RemoteAddr,
 				"error", err,
@@ -147,6 +215,7 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 	slog.Info("lore ingested",
 		"component", "api",
 		"action", "ingest",
+		"store_id", storeID,
 		"source_id", req.SourceID,
 		"remote_addr", r.RemoteAddr,
 		"accepted", accepted,
@@ -166,18 +235,22 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// Snapshot handles GET /api/v1/lore/snapshot
+// Snapshot handles GET /api/v1/lore/snapshot and GET /api/v1/stores/{store_id}/lore/snapshot
 // Streams the cached database snapshot as application/octet-stream.
 // Returns 503 with Retry-After if no snapshot is available.
 func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	sourceID := extractSourceID(r)
+	storeID := StoreIDFromContext(r.Context())
 
-	reader, err := h.store.GetSnapshot(r.Context())
+	s := h.getStoreForRequest(r)
+
+	reader, err := s.GetSnapshot(r.Context())
 	if errors.Is(err, store.ErrSnapshotNotAvailable) {
 		slog.Warn("snapshot not available",
 			"component", "api",
 			"action", "client_bootstrap_failed",
+			"store_id", storeID,
 			"source_id", sourceID,
 			"remote_addr", r.RemoteAddr,
 			"reason", "snapshot_not_ready",
@@ -191,6 +264,7 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 		slog.Error("snapshot retrieval failed",
 			"component", "api",
 			"action", "client_bootstrap_failed",
+			"store_id", storeID,
 			"source_id", sourceID,
 			"remote_addr", r.RemoteAddr,
 			"error", err,
@@ -206,6 +280,7 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Debug("snapshot stream interrupted",
 			"component", "api",
+			"store_id", storeID,
 			"source_id", sourceID,
 			"error", err,
 		)
@@ -215,6 +290,7 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 	slog.Info("recall client bootstrap",
 		"component", "api",
 		"action", "client_bootstrap",
+		"store_id", storeID,
 		"source_id", sourceID,
 		"remote_addr", r.RemoteAddr,
 		"bytes_served", bytesWritten,
@@ -222,13 +298,16 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-// Delta handles GET /api/v1/lore/delta
+// Delta handles GET /api/v1/lore/delta and GET /api/v1/stores/{store_id}/lore/delta
 // Requires `since` query parameter in RFC3339 format.
 // Returns 400 if since is missing or invalid.
 // Returns JSON with lore[], deleted_ids[], and as_of.
 func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	sourceID := extractSourceID(r)
+	storeID := StoreIDFromContext(r.Context())
+
+	s := h.getStoreForRequest(r)
 
 	// Parse and validate since parameter
 	since := r.URL.Query().Get("since")
@@ -236,6 +315,7 @@ func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("delta request missing since",
 			"component", "api",
 			"action", "client_sync_failed",
+			"store_id", storeID,
 			"source_id", sourceID,
 			"remote_addr", r.RemoteAddr,
 			"reason", "missing_since",
@@ -250,6 +330,7 @@ func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("delta request invalid since",
 			"component", "api",
 			"action", "client_sync_failed",
+			"store_id", storeID,
 			"source_id", sourceID,
 			"remote_addr", r.RemoteAddr,
 			"since", since,
@@ -260,11 +341,12 @@ func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.store.GetDelta(r.Context(), sinceTime)
+	result, err := s.GetDelta(r.Context(), sinceTime)
 	if err != nil {
 		slog.Error("delta retrieval failed",
 			"component", "api",
 			"action", "client_sync_failed",
+			"store_id", storeID,
 			"source_id", sourceID,
 			"remote_addr", r.RemoteAddr,
 			"since", since,
@@ -278,6 +360,7 @@ func (h *Handler) Delta(w http.ResponseWriter, r *http.Request) {
 	slog.Info("recall client sync",
 		"component", "api",
 		"action", "client_sync",
+		"store_id", storeID,
 		"source_id", sourceID,
 		"remote_addr", r.RemoteAddr,
 		"since", since,
@@ -304,9 +387,52 @@ type feedbackReqEntry struct {
 	Type   string `json:"type"`
 }
 
-// Feedback handles POST /api/v1/lore/feedback
+// --- Store Management API Types ---
+
+// ListStoresResponse is the response for GET /api/v1/stores.
+type ListStoresResponse struct {
+	Stores []StoreListItem `json:"stores"`
+	Total  int             `json:"total"`
+}
+
+// StoreListItem represents a store in the list response.
+type StoreListItem struct {
+	ID           string    `json:"id"`
+	RecordCount  int64     `json:"record_count"`
+	LastAccessed time.Time `json:"last_accessed"`
+	SizeBytes    int64     `json:"size_bytes"`
+	Description  string    `json:"description,omitempty"`
+}
+
+// StoreInfoResponse is the response for GET /api/v1/stores/{store_id}.
+type StoreInfoResponse struct {
+	ID           string               `json:"id"`
+	Created      time.Time            `json:"created"`
+	LastAccessed time.Time            `json:"last_accessed"`
+	Description  string               `json:"description,omitempty"`
+	SizeBytes    int64                `json:"size_bytes"`
+	Stats        *types.ExtendedStats `json:"stats"`
+}
+
+// CreateStoreRequest is the request body for POST /api/v1/stores.
+type CreateStoreRequest struct {
+	StoreID     string `json:"store_id"`
+	Description string `json:"description,omitempty"`
+}
+
+// CreateStoreResponse is the response for POST /api/v1/stores.
+type CreateStoreResponse struct {
+	ID          string    `json:"id"`
+	Created     time.Time `json:"created"`
+	Description string    `json:"description,omitempty"`
+}
+
+// Feedback handles POST /api/v1/lore/feedback and POST /api/v1/stores/{store_id}/lore/feedback
 func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	storeID := StoreIDFromContext(r.Context())
+
+	s := h.getStoreForRequest(r)
 
 	// Parse JSON body
 	var req feedbackRequest
@@ -344,11 +470,12 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Call store
-	result, err := h.store.RecordFeedback(r.Context(), feedbackEntries)
+	result, err := s.RecordFeedback(r.Context(), feedbackEntries)
 	if err != nil {
 		slog.Error("feedback processing failed",
 			"component", "api",
 			"action", "feedback_failed",
+			"store_id", storeID,
 			"source_id", req.SourceID,
 			"remote_addr", r.RemoteAddr,
 			"error", err,
@@ -363,6 +490,7 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("feedback processing exceeded performance target",
 			"component", "api",
 			"action", "feedback",
+			"store_id", storeID,
 			"source_id", req.SourceID,
 			"remote_addr", r.RemoteAddr,
 			"duration_ms", duration.Milliseconds(),
@@ -373,6 +501,7 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 	slog.Info("feedback processed",
 		"component", "api",
 		"action", "feedback",
+		"store_id", storeID,
 		"source_id", req.SourceID,
 		"remote_addr", r.RemoteAddr,
 		"count", len(result.Updates),
@@ -383,9 +512,12 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// DeleteLore handles DELETE /api/v1/lore/{id}
+// DeleteLore handles DELETE /api/v1/lore/{id} and DELETE /api/v1/stores/{store_id}/lore/{id}
 func (h *Handler) DeleteLore(w http.ResponseWriter, r *http.Request) {
+	storeID := StoreIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
+
+	s := h.getStoreForRequest(r)
 
 	// Validate ULID format using shared validation (consistent with Feedback handler)
 	if err := validation.ValidateULID("id", id); err != nil {
@@ -394,7 +526,7 @@ func (h *Handler) DeleteLore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.store.DeleteLore(r.Context(), id)
+	err := s.DeleteLore(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Generic message - don't echo user-supplied ID (Issue #3)
@@ -403,6 +535,7 @@ func (h *Handler) DeleteLore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("delete lore failed",
+			"store_id", storeID,
 			"error", err,
 			"id", id,
 			"request_id", GetRequestID(r.Context()),
@@ -417,8 +550,251 @@ func (h *Handler) DeleteLore(w http.ResponseWriter, r *http.Request) {
 	slog.Info("lore deleted",
 		"component", "api",
 		"action", "delete_lore",
+		"store_id", storeID,
 		"id", id,
 		"request_id", GetRequestID(r.Context()),
+		"remote_addr", r.RemoteAddr,
+	)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Store Management Handlers ---
+
+// ListStores handles GET /api/v1/stores
+func (h *Handler) ListStores(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if h.storeManager == nil {
+		WriteProblem(w, r, http.StatusServiceUnavailable, "Multi-store support not configured")
+		return
+	}
+
+	storeInfos, err := h.storeManager.ListStores(ctx)
+	if err != nil {
+		slog.Error("list stores failed", "error", err)
+		WriteProblem(w, r, http.StatusInternalServerError, "Internal error listing stores")
+		return
+	}
+
+	// Enrich with record counts
+	items := make([]StoreListItem, 0, len(storeInfos))
+	for _, info := range storeInfos {
+		item := StoreListItem{
+			ID:           info.ID,
+			LastAccessed: info.LastAccessed,
+			SizeBytes:    info.SizeBytes,
+			Description:  info.Description,
+		}
+
+		// Get record count from store (if loaded or loadable)
+		managed, err := h.storeManager.GetStore(ctx, info.ID)
+		if err == nil {
+			stats, err := managed.Store.GetStats(ctx)
+			if err == nil {
+				item.RecordCount = stats.LoreCount
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	// Sort by ID
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].ID < items[j].ID
+	})
+
+	resp := ListStoresResponse{
+		Stores: items,
+		Total:  len(items),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+
+	slog.Info("stores listed",
+		"component", "api",
+		"action", "list_stores",
+		"count", len(items),
+	)
+}
+
+// GetStoreInfo handles GET /api/v1/stores/{store_id}
+func (h *Handler) GetStoreInfo(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	storeID := chi.URLParam(r, "store_id")
+
+	if h.storeManager == nil {
+		WriteProblem(w, r, http.StatusServiceUnavailable, "Multi-store support not configured")
+		return
+	}
+
+	// URL decode the store ID (handles neuralmux%2Fengram -> neuralmux/engram)
+	decodedID, err := url.PathUnescape(storeID)
+	if err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, "Invalid store ID encoding")
+		return
+	}
+
+	// Validate store ID format
+	if err := multistore.ValidateStoreID(decodedID); err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Get store (this also validates existence)
+	managed, err := h.storeManager.GetStore(ctx, decodedID)
+	if err != nil {
+		if errors.Is(err, multistore.ErrStoreNotFound) {
+			WriteProblem(w, r, http.StatusNotFound, "Store not found")
+			return
+		}
+		slog.Error("get store failed", "store_id", decodedID, "error", err)
+		WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
+		return
+	}
+
+	// Get extended stats
+	stats, err := managed.Store.GetExtendedStats(ctx)
+	if err != nil {
+		slog.Error("get store stats failed", "store_id", decodedID, "error", err)
+		WriteProblem(w, r, http.StatusInternalServerError, "Internal error getting stats")
+		return
+	}
+
+	// Get database file size
+	dbPath := filepath.Join(managed.BasePath, "engram.db")
+	var sizeBytes int64
+	if info, err := os.Stat(dbPath); err == nil {
+		sizeBytes = info.Size()
+	}
+
+	resp := StoreInfoResponse{
+		ID:           decodedID,
+		Created:      managed.Meta.Created,
+		LastAccessed: managed.Meta.LastAccessed,
+		Description:  managed.Meta.Description,
+		SizeBytes:    sizeBytes,
+		Stats:        stats,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+
+	slog.Info("store info retrieved",
+		"component", "api",
+		"action", "get_store_info",
+		"store_id", decodedID,
+	)
+}
+
+// CreateStore handles POST /api/v1/stores
+func (h *Handler) CreateStore(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if h.storeManager == nil {
+		WriteProblem(w, r, http.StatusServiceUnavailable, "Multi-store support not configured")
+		return
+	}
+
+	var req CreateStoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %s", err.Error()))
+		return
+	}
+
+	// Validate store ID
+	if err := multistore.ValidateStoreID(req.StoreID); err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Create store
+	managed, err := h.storeManager.CreateStore(ctx, req.StoreID, req.Description)
+	if err != nil {
+		if errors.Is(err, multistore.ErrStoreAlreadyExists) {
+			WriteProblemConflict(w, r, fmt.Sprintf("Store already exists: %s", req.StoreID))
+			return
+		}
+		if errors.Is(err, multistore.ErrInvalidStoreID) {
+			WriteProblem(w, r, http.StatusBadRequest, err.Error())
+			return
+		}
+		slog.Error("create store failed", "store_id", req.StoreID, "error", err)
+		WriteProblem(w, r, http.StatusInternalServerError, "Internal error creating store")
+		return
+	}
+
+	resp := CreateStoreResponse{
+		ID:          managed.ID,
+		Created:     managed.Meta.Created,
+		Description: managed.Meta.Description,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+
+	slog.Info("store created via API",
+		"component", "api",
+		"action", "create_store",
+		"store_id", req.StoreID,
+		"request_id", GetRequestID(ctx),
+		"remote_addr", r.RemoteAddr,
+	)
+}
+
+// DeleteStore handles DELETE /api/v1/stores/{store_id}
+func (h *Handler) DeleteStore(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	storeID := chi.URLParam(r, "store_id")
+
+	if h.storeManager == nil {
+		WriteProblem(w, r, http.StatusServiceUnavailable, "Multi-store support not configured")
+		return
+	}
+
+	// URL decode
+	decodedID, err := url.PathUnescape(storeID)
+	if err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, "Invalid store ID encoding")
+		return
+	}
+
+	// Require confirm=true
+	if r.URL.Query().Get("confirm") != "true" {
+		WriteProblem(w, r, http.StatusBadRequest, "Delete requires confirm=true query parameter")
+		return
+	}
+
+	// Prevent default store deletion
+	if multistore.IsDefaultStore(decodedID) {
+		WriteProblemForbidden(w, r, "Cannot delete the default store")
+		return
+	}
+
+	// Validate store ID
+	if err := multistore.ValidateStoreID(decodedID); err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Delete store
+	if err := h.storeManager.DeleteStore(ctx, decodedID); err != nil {
+		if errors.Is(err, multistore.ErrStoreNotFound) {
+			WriteProblem(w, r, http.StatusNotFound, "Store not found")
+			return
+		}
+		slog.Error("delete store failed", "store_id", decodedID, "error", err)
+		WriteProblem(w, r, http.StatusInternalServerError, "Internal error deleting store")
+		return
+	}
+
+	slog.Info("store deleted via API",
+		"component", "api",
+		"action", "delete_store",
+		"store_id", decodedID,
+		"request_id", GetRequestID(ctx),
 		"remote_addr", r.RemoteAddr,
 	)
 

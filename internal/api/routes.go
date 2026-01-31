@@ -7,8 +7,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// NewRouter creates a new router with all routes configured
-func NewRouter(h *Handler) *chi.Mux {
+// NewRouter creates a new router with all routes configured.
+// The mgr parameter provides multi-store support; if nil, store-scoped routes
+// will not be available and default store middleware will not be applied.
+func NewRouter(h *Handler, mgr StoreGetter) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Global middleware (all routes)
@@ -29,12 +31,40 @@ func NewRouter(h *Handler) *chi.Mux {
 		// Protected routes (auth required)
 		r.Group(func(r chi.Router) {
 			r.Use(AuthMiddleware(h.apiKey))
-			r.Post("/lore", h.IngestLore)
-			r.Get("/lore/snapshot", h.Snapshot)
-			r.Get("/lore/delta", h.Delta)
-			r.Post("/lore/feedback", h.Feedback)
-			// DELETE has additional rate limiting to prevent abuse
-			r.With(deleteRateLimiter.Middleware).Delete("/lore/{id}", h.DeleteLore)
+
+			// Store management routes
+			r.Get("/stores", h.ListStores)
+			r.Post("/stores", h.CreateStore)
+			r.Get("/stores/{store_id}", h.GetStoreInfo)
+			r.Delete("/stores/{store_id}", h.DeleteStore)
+
+			// Store-scoped lore routes (NEW for Story 7.3)
+			if mgr != nil {
+				r.Route("/stores/{store_id}/lore", func(r chi.Router) {
+					r.Use(StoreContextMiddleware(mgr))
+
+					r.Post("/", h.IngestLore)
+					r.Get("/snapshot", h.Snapshot)
+					r.Get("/delta", h.Delta)
+					r.Post("/feedback", h.Feedback)
+					r.With(deleteRateLimiter.Middleware).Delete("/{id}", h.DeleteLore)
+				})
+			}
+
+			// Backward-compatible lore routes (default store)
+			r.Route("/lore", func(r chi.Router) {
+				// Apply default store middleware if manager available
+				if mgr != nil {
+					r.Use(DefaultStoreMiddleware(mgr))
+				}
+
+				r.Post("/", h.IngestLore)
+				r.Get("/snapshot", h.Snapshot)
+				r.Get("/delta", h.Delta)
+				r.Post("/feedback", h.Feedback)
+				// DELETE has additional rate limiting to prevent abuse
+				r.With(deleteRateLimiter.Middleware).Delete("/{id}", h.DeleteLore)
+			})
 		})
 	})
 
