@@ -1,7 +1,7 @@
 # Engram API Specification
 
-**Version:** 1.0
-**Last Updated:** 2026-01-28
+**Version:** 1.1.0
+**Last Updated:** 2026-01-31
 **Base URL:** `https://{host}/api/v1`
 
 ---
@@ -19,6 +19,7 @@
    - [Snapshot](#snapshot)
    - [Delta Sync](#delta-sync)
    - [Feedback](#feedback)
+   - [Delete Lore](#delete-lore)
 5. [Data Schemas](#data-schemas)
 6. [Error Handling](#error-handling)
 7. [Validation Rules](#validation-rules)
@@ -51,7 +52,7 @@ Engram is the central lore service for AI agent memory. It provides persistence 
 
 ## Authentication
 
-All endpoints except `/api/v1/health` require Bearer token authentication.
+All endpoints except `/api/v1/health` and `/api/v1/stats` require Bearer token authentication.
 
 ### Request Header
 
@@ -228,6 +229,14 @@ GET /api/v1/stores
 | `stores[].description` | string | Optional description |
 | `total` | integer | Total store count |
 
+**Error Responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | Missing or invalid API key |
+| `500 Internal Server Error` | Database or internal error |
+| `503 Service Unavailable` | Multi-store support not configured |
+
 ---
 
 #### Get Store Info
@@ -282,7 +291,10 @@ GET /api/v1/stores/{store_id}
 | Status | Condition |
 |--------|-----------|
 | `400 Bad Request` | Invalid store ID format |
+| `401 Unauthorized` | Missing or invalid API key |
 | `404 Not Found` | Store does not exist |
+| `500 Internal Server Error` | Database or internal error |
+| `503 Service Unavailable` | Multi-store support not configured |
 
 ---
 
@@ -315,7 +327,9 @@ POST /api/v1/stores
 - Lowercase alphanumeric characters and hyphens only
 - Path segments separated by `/` (max 4 levels)
 - Maximum 128 characters total
-- Examples: `default`, `myproject`, `org/team/project`
+- Each segment must start and end with alphanumeric (no leading/trailing hyphens)
+- No empty segments allowed
+- Examples: `default`, `myproject`, `org/team/project`, `neuralmux/engram`
 
 **Response:** `201 Created`
 
@@ -332,7 +346,10 @@ POST /api/v1/stores
 | Status | Condition |
 |--------|-----------|
 | `400 Bad Request` | Invalid store ID format |
+| `401 Unauthorized` | Missing or invalid API key |
 | `409 Conflict` | Store already exists |
+| `500 Internal Server Error` | Database or internal error |
+| `503 Service Unavailable` | Multi-store support not configured |
 
 ---
 
@@ -362,9 +379,12 @@ DELETE /api/v1/stores/{store_id}?confirm=true
 
 | Status | Condition |
 |--------|-----------|
-| `400 Bad Request` | Missing `confirm=true` |
+| `400 Bad Request` | Missing `confirm=true` or invalid store ID |
+| `401 Unauthorized` | Missing or invalid API key |
 | `403 Forbidden` | Cannot delete `default` store |
 | `404 Not Found` | Store does not exist |
+| `500 Internal Server Error` | Database or internal error |
+| `503 Service Unavailable` | Multi-store support not configured |
 
 **Warning:** Store deletion is permanent and removes all lore data.
 
@@ -644,16 +664,16 @@ POST /api/v1/lore/feedback
   "source_id": "devcontainer-abc123",
   "feedback": [
     {
-      "id": "01ARYZ6S41TSV4RRFFQ69G5FAV",
-      "outcome": "helpful"
+      "lore_id": "01ARYZ6S41TSV4RRFFQ69G5FAV",
+      "type": "helpful"
     },
     {
-      "id": "01ARYZ6S41TSV4RRFFQ69G5XYZ",
-      "outcome": "not_relevant"
+      "lore_id": "01ARYZ6S41TSV4RRFFQ69G5XYZ",
+      "type": "not_relevant"
     },
     {
-      "id": "01ARYZ6S41TSV4RRFFQ69G5ABC",
-      "outcome": "incorrect"
+      "lore_id": "01ARYZ6S41TSV4RRFFQ69G5ABC",
+      "type": "incorrect"
     }
   ]
 }
@@ -665,8 +685,8 @@ POST /api/v1/lore/feedback
 |-------|------|----------|-------------|
 | `source_id` | string | Yes | Identifier for the source environment |
 | `feedback` | array | Yes | Array of feedback entries (1-50 entries) |
-| `feedback[].id` | string (ULID) | Yes | Lore entry ID |
-| `feedback[].outcome` | string | Yes | Feedback type (see below) |
+| `feedback[].lore_id` | string (ULID) | Yes | Lore entry ID |
+| `feedback[].type` | string | Yes | Feedback type (see below) |
 
 **Feedback Outcomes:**
 
@@ -682,22 +702,20 @@ POST /api/v1/lore/feedback
 {
   "updates": [
     {
-      "id": "01ARYZ6S41TSV4RRFFQ69G5FAV",
-      "previous": 0.85,
-      "current": 0.93,
+      "lore_id": "01ARYZ6S41TSV4RRFFQ69G5FAV",
+      "previous_confidence": 0.85,
+      "current_confidence": 0.93,
       "validation_count": 4
     },
     {
-      "id": "01ARYZ6S41TSV4RRFFQ69G5XYZ",
-      "previous": 0.70,
-      "current": 0.70,
-      "validation_count": 2
+      "lore_id": "01ARYZ6S41TSV4RRFFQ69G5XYZ",
+      "previous_confidence": 0.70,
+      "current_confidence": 0.70
     },
     {
-      "id": "01ARYZ6S41TSV4RRFFQ69G5ABC",
-      "previous": 0.60,
-      "current": 0.45,
-      "validation_count": 1
+      "lore_id": "01ARYZ6S41TSV4RRFFQ69G5ABC",
+      "previous_confidence": 0.60,
+      "current_confidence": 0.45
     }
   ]
 }
@@ -708,10 +726,10 @@ POST /api/v1/lore/feedback
 | Field | Type | Description |
 |-------|------|-------------|
 | `updates` | array | Results for each feedback entry |
-| `updates[].id` | string (ULID) | Lore entry ID |
-| `updates[].previous` | number | Confidence before adjustment |
-| `updates[].current` | number | Confidence after adjustment |
-| `updates[].validation_count` | integer | Updated validation count |
+| `updates[].lore_id` | string (ULID) | Lore entry ID |
+| `updates[].previous_confidence` | number | Confidence before adjustment |
+| `updates[].current_confidence` | number | Confidence after adjustment |
+| `updates[].validation_count` | integer or null | Updated validation count (only present for "helpful" feedback) |
 
 **Confidence Boundaries:**
 - Maximum: 1.0 (capped regardless of positive feedback)
@@ -728,6 +746,50 @@ POST /api/v1/lore/feedback
 |--------|-----------|
 | `404 Not Found` | One or more lore IDs not found |
 | `422 Unprocessable Entity` | Invalid feedback data |
+
+---
+
+### Delete Lore
+
+Soft-delete a specific lore entry.
+
+```
+DELETE /api/v1/lore/{id}
+DELETE /api/v1/stores/{store_id}/lore/{id}
+```
+
+**Authentication:** Required
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string (ULID) | Lore entry ID to delete |
+| `store_id` | string | Store ID (for store-scoped variant) |
+
+**Response:** `204 No Content`
+
+**Rate Limiting:**
+
+DELETE operations are rate-limited to prevent abuse:
+- Burst limit: 100 requests
+- Sustained rate: 10 requests/second
+
+When rate limited, the server returns `429 Too Many Requests` with a `Retry-After` header.
+
+**Error Responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | Invalid lore ID format (must be valid ULID) |
+| `404 Not Found` | Lore entry not found |
+| `429 Too Many Requests` | Rate limit exceeded |
+
+**Behavior:**
+
+- Deleted entries are soft-deleted (marked with `deleted_at` timestamp)
+- Deleted entries appear in delta sync `deleted_ids` array
+- Deletion is idempotent — deleting an already-deleted entry returns 404
 
 ---
 
@@ -841,25 +903,31 @@ Validation errors include an additional `errors` array:
 | Type URI | Status | Title | When |
 |----------|--------|-------|------|
 | `https://engram.dev/errors/unauthorized` | 401 | Unauthorized | Missing/invalid API key |
+| `https://engram.dev/errors/forbidden` | 403 | Forbidden | Action not allowed (e.g., delete default store) |
 | `https://engram.dev/errors/bad-request` | 400 | Bad Request | Malformed JSON, invalid parameters |
 | `https://engram.dev/errors/not-found` | 404 | Not Found | Resource not found |
 | `https://engram.dev/errors/validation-error` | 422 | Validation Error | Field validation failures |
 | `https://engram.dev/errors/conflict` | 409 | Conflict | Duplicate entry conflict |
-| `https://engram.dev/errors/service-unavailable` | 503 | Service Unavailable | Snapshot in progress, embedding unavailable |
+| `https://engram.dev/errors/rate-limit` | 429 | Too Many Requests | Rate limit exceeded |
 | `https://engram.dev/errors/internal-error` | 500 | Internal Server Error | Unexpected server error |
+| `https://engram.dev/errors/service-unavailable` | 503 | Service Unavailable | Snapshot in progress, multi-store not configured |
 
 ### HTTP Status Code Summary
 
 | Code | Meaning | Used By |
 |------|---------|---------|
 | 200 | Success | All endpoints |
+| 201 | Created | Create Store |
+| 204 | No Content | Delete Store, Delete Lore |
 | 400 | Bad request (malformed JSON, invalid parameters) | All endpoints |
 | 401 | Unauthorized (missing/invalid API key) | All authenticated endpoints |
-| 404 | Not found (lore ID not found) | Feedback |
+| 403 | Forbidden (action not allowed) | Delete Store (default store) |
+| 404 | Not found (resource not found) | Feedback, Delete Lore, Store endpoints |
+| 409 | Conflict (duplicate) | Create Store |
 | 422 | Unprocessable entity (validation errors) | Ingest, Feedback |
-| 429 | Too many requests (reserved for future) | — |
+| 429 | Too many requests (rate limited) | Delete Lore |
 | 500 | Internal server error | All endpoints |
-| 503 | Service unavailable (snapshot in progress) | Snapshot |
+| 503 | Service unavailable | Snapshot, Store Management |
 
 ---
 
@@ -1030,8 +1098,8 @@ Content-Type: application/json
 {
   "source_id": "devcontainer-team-alpha-01",
   "feedback": [
-    {"id": "01HQ5K9X2YPZV3CMWN8BTRFJ4G", "outcome": "helpful"},
-    {"id": "01HQ5K9X2YPZV3CMWN8BTRFJ4H", "outcome": "incorrect"}
+    {"lore_id": "01HQ5K9X2YPZV3CMWN8BTRFJ4G", "type": "helpful"},
+    {"lore_id": "01HQ5K9X2YPZV3CMWN8BTRFJ4H", "type": "incorrect"}
   ]
 }
 ```
@@ -1042,8 +1110,8 @@ Content-Type: application/json
 
 {
   "updates": [
-    {"id": "01HQ5K9X2YPZV3CMWN8BTRFJ4G", "previous": 0.80, "current": 0.88, "validation_count": 5},
-    {"id": "01HQ5K9X2YPZV3CMWN8BTRFJ4H", "previous": 0.65, "current": 0.50, "validation_count": 2}
+    {"lore_id": "01HQ5K9X2YPZV3CMWN8BTRFJ4G", "previous_confidence": 0.80, "current_confidence": 0.88, "validation_count": 5},
+    {"lore_id": "01HQ5K9X2YPZV3CMWN8BTRFJ4H", "previous_confidence": 0.65, "current_confidence": 0.50}
   ]
 }
 ```
@@ -1087,3 +1155,4 @@ Content-Type: application/problem+json
 |---------|------|---------|
 | 1.0 | 2026-01-28 | Initial specification |
 | 1.1 | 2026-01-31 | Added multi-store endpoints (Store Management, Store-Scoped Operations) |
+| 1.1.0 | 2026-01-31 | Aligned with OpenAPI spec: added Delete Lore endpoint, fixed feedback field names (`lore_id`/`type`, `previous_confidence`/`current_confidence`), added 429 rate-limit errors, added 500/503 to store endpoints, updated validation_count to be optional |
