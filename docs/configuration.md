@@ -38,6 +38,7 @@ All environment variables use the `ENGRAM_` prefix, except `OPENAI_API_KEY` whic
 | `ENGRAM_DEV_MODE` | boolean | `false` | Skip API key validation (dev only) |
 | `ENGRAM_LOG_LEVEL` | string | `info` | Logging level |
 | `ENGRAM_LOG_FORMAT` | string | `json` | Log output format |
+| `ENGRAM_STORES_ROOT` | string | `~/.engram/stores` | Root directory for multi-store data |
 
 ## Configuration Options
 
@@ -137,6 +138,76 @@ export ENGRAM_DB_PATH=/var/lib/engram/lore.db
 database:
   path: "/var/lib/engram/lore.db"
 ```
+
+---
+
+### Multi-Store Configuration
+
+Engram supports multiple isolated stores for different projects. Each store has its own database, snapshots, and metadata.
+
+#### `ENGRAM_STORES_ROOT`
+
+**Type:** string
+**Default:** `~/.engram/stores`
+**YAML path:** `stores.root_path`
+
+Root directory where store data is persisted. Each store creates a subdirectory under this path.
+
+```bash
+export ENGRAM_STORES_ROOT=/var/lib/engram/stores
+```
+
+```yaml
+stores:
+  root_path: "/var/lib/engram/stores"
+```
+
+**Directory Structure:**
+
+```
+~/.engram/stores/
+├── default/
+│   ├── engram.db
+│   ├── meta.yaml
+│   └── snapshots/
+├── neuralmux/
+│   └── engram/
+│       ├── engram.db
+│       ├── meta.yaml
+│       └── snapshots/
+└── myproject/
+    ├── engram.db
+    ├── meta.yaml
+    └── snapshots/
+```
+
+---
+
+#### Multi-Project Example
+
+For organizations running multiple projects, configure each project's Recall client with a specific store:
+
+**Server Configuration:**
+
+```yaml
+stores:
+  root_path: "/data/engram/stores"
+```
+
+**Recall Client Configuration (per project):**
+
+```yaml
+# In project's _bmad config
+engram_store: "neuralmux/engram"
+```
+
+Or via environment variable:
+
+```bash
+export ENGRAM_STORE="neuralmux/engram"
+```
+
+See the [Multi-Store Guide](multi-store.md) for detailed configuration options.
 
 ---
 
@@ -392,6 +463,9 @@ server:
 
 database:
   path: "data/engram.db"
+
+stores:
+  root_path: "~/.engram/stores"
 
 embedding:
   model: "text-embedding-3-small"

@@ -13,6 +13,8 @@
 3. [Common Patterns](#common-patterns)
 4. [Endpoints](#endpoints)
    - [Health Check](#health-check)
+   - [Store Management](#store-management)
+   - [Store-Scoped Lore Operations](#store-scoped-lore-operations)
    - [Lore Ingestion](#lore-ingestion)
    - [Snapshot](#snapshot)
    - [Delta Sync](#delta-sync)
@@ -131,9 +133,16 @@ Check service health and retrieve configuration metadata.
 
 ```
 GET /api/v1/health
+GET /api/v1/health?store={store_id}
 ```
 
 **Authentication:** Not required
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store` | string | No | Store ID for store-specific stats |
 
 **Response:** `200 OK`
 
@@ -143,7 +152,8 @@ GET /api/v1/health
   "version": "1.0.0",
   "embedding_model": "text-embedding-3-small",
   "lore_count": 1234,
-  "last_snapshot": "2026-01-28T12:00:00Z"
+  "last_snapshot": "2026-01-28T12:00:00Z",
+  "store_id": "neuralmux/engram"
 }
 ```
 
@@ -156,11 +166,237 @@ GET /api/v1/health
 | `embedding_model` | string | Embedding model identifier for compatibility checking |
 | `lore_count` | integer | Total number of lore entries in the store |
 | `last_snapshot` | string (RFC 3339) or null | Timestamp of last snapshot generation |
+| `store_id` | string | Store ID (only present when `?store=` specified) |
+
+**Without `?store=` parameter:** Returns stats for the `default` store.
+
+**With invalid store:** Returns `404 Not Found`.
 
 **Use Cases:**
 - Verify service availability before sync operations
 - Detect embedding model mismatches (client should warn if local model differs)
 - Monitor lore growth and snapshot freshness
+- Check store-specific health status
+
+---
+
+### Store Management
+
+Manage isolated stores for multi-project deployments.
+
+#### List Stores
+
+```
+GET /api/v1/stores
+```
+
+**Authentication:** Required
+
+**Response:** `200 OK`
+
+```json
+{
+  "stores": [
+    {
+      "id": "default",
+      "record_count": 1523,
+      "last_accessed": "2026-01-31T10:30:00Z",
+      "size_bytes": 4194304,
+      "description": "Default store (auto-created)"
+    },
+    {
+      "id": "neuralmux/engram",
+      "record_count": 847,
+      "last_accessed": "2026-01-31T09:15:00Z",
+      "size_bytes": 2097152,
+      "description": "Engram project lore"
+    }
+  ],
+  "total": 2
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stores` | array | List of stores |
+| `stores[].id` | string | Store identifier (path-style) |
+| `stores[].record_count` | integer | Number of lore entries |
+| `stores[].last_accessed` | timestamp | Last access time |
+| `stores[].size_bytes` | integer | Database file size |
+| `stores[].description` | string | Optional description |
+| `total` | integer | Total store count |
+
+---
+
+#### Get Store Info
+
+```
+GET /api/v1/stores/{store_id}
+```
+
+**Authentication:** Required
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `store_id` | string | URL-encoded store ID (e.g., `neuralmux%2Fengram`) |
+
+**Response:** `200 OK`
+
+```json
+{
+  "id": "neuralmux/engram",
+  "created": "2026-01-15T08:00:00Z",
+  "last_accessed": "2026-01-31T10:30:00Z",
+  "description": "Engram project lore",
+  "size_bytes": 2097152,
+  "stats": {
+    "total_lore": 850,
+    "active_lore": 847,
+    "deleted_lore": 3,
+    "embedding_stats": {
+      "complete": 840,
+      "pending": 7,
+      "failed": 0
+    },
+    "category_stats": {
+      "ARCHITECTURAL_DECISION": 125,
+      "PATTERN_OUTCOME": 89,
+      "EDGE_CASE_DISCOVERY": 234
+    },
+    "quality_stats": {
+      "average_confidence": 0.72,
+      "validated_count": 156,
+      "high_confidence_count": 312,
+      "low_confidence_count": 45
+    }
+  }
+}
+```
+
+**Error Responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | Invalid store ID format |
+| `404 Not Found` | Store does not exist |
+
+---
+
+#### Create Store
+
+```
+POST /api/v1/stores
+```
+
+**Authentication:** Required
+
+**Request Body:**
+
+```json
+{
+  "store_id": "neuralmux/recall",
+  "description": "Recall client lore"
+}
+```
+
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `store_id` | string | Yes | Store identifier (see format rules below) |
+| `description` | string | No | Human-readable description |
+
+**Store ID Format:**
+
+- Lowercase alphanumeric characters and hyphens only
+- Path segments separated by `/` (max 4 levels)
+- Maximum 128 characters total
+- Examples: `default`, `myproject`, `org/team/project`
+
+**Response:** `201 Created`
+
+```json
+{
+  "id": "neuralmux/recall",
+  "created": "2026-01-31T11:00:00Z",
+  "description": "Recall client lore"
+}
+```
+
+**Error Responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | Invalid store ID format |
+| `409 Conflict` | Store already exists |
+
+---
+
+#### Delete Store
+
+```
+DELETE /api/v1/stores/{store_id}?confirm=true
+```
+
+**Authentication:** Required
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `store_id` | string | URL-encoded store ID |
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `confirm` | string | Yes | Must be `true` to confirm deletion |
+
+**Response:** `204 No Content`
+
+**Error Responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | Missing `confirm=true` |
+| `403 Forbidden` | Cannot delete `default` store |
+| `404 Not Found` | Store does not exist |
+
+**Warning:** Store deletion is permanent and removes all lore data.
+
+---
+
+### Store-Scoped Lore Operations
+
+All lore endpoints support store-scoped variants that operate on a specific store instead of the default.
+
+**URL Pattern:**
+
+```
+/api/v1/stores/{store_id}/lore/*
+```
+
+**Examples:**
+
+| Default Route | Store-Scoped Route |
+|---------------|-------------------|
+| `POST /api/v1/lore` | `POST /api/v1/stores/{store_id}/lore` |
+| `GET /api/v1/lore/snapshot` | `GET /api/v1/stores/{store_id}/lore/snapshot` |
+| `GET /api/v1/lore/delta` | `GET /api/v1/stores/{store_id}/lore/delta` |
+| `POST /api/v1/lore/feedback` | `POST /api/v1/stores/{store_id}/lore/feedback` |
+| `DELETE /api/v1/lore/{id}` | `DELETE /api/v1/stores/{store_id}/lore/{id}` |
+
+**Backward Compatibility:**
+
+The original `/api/v1/lore/*` routes continue to work and operate on the `default` store. Existing clients require no changes.
+
+**Store Not Found:**
+
+Store-scoped operations return `404 Not Found` if the store doesn't exist. Stores are NOT auto-created — use `POST /api/v1/stores` first.
 
 ---
 
@@ -850,3 +1086,4 @@ Content-Type: application/problem+json
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-01-28 | Initial specification |
+| 1.1 | 2026-01-31 | Added multi-store endpoints (Store Management, Store-Scoped Operations) |

@@ -498,6 +498,131 @@ curl -X DELETE https://engram.example.com/api/v1/lore/01HQ5K9X2YPZV3CMWN8BTRFJ4G
 
 ---
 
+## Multi-Store Operations
+
+Engram supports multiple isolated stores for different projects. This enables organizations to run a single Engram instance while keeping project knowledge separate.
+
+### Store ID Format
+
+Store IDs use a path-style format:
+
+- **Simple:** `myproject`
+- **Hierarchical:** `org/team/project`
+- **Rules:** Lowercase alphanumeric + hyphens, max 4 levels, max 128 chars
+
+### Managing Stores
+
+#### List All Stores
+
+```bash
+curl -H "Authorization: Bearer $ENGRAM_API_KEY" \
+  https://engram.example.com/api/v1/stores
+```
+
+#### Create a Store
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $ENGRAM_API_KEY" \
+  -H "Content-Type: application/json" \
+  https://engram.example.com/api/v1/stores \
+  -d '{
+    "store_id": "neuralmux/engram",
+    "description": "Engram project lore"
+  }'
+```
+
+#### Get Store Details
+
+```bash
+# Note: slash in store ID must be URL-encoded
+curl -H "Authorization: Bearer $ENGRAM_API_KEY" \
+  https://engram.example.com/api/v1/stores/neuralmux%2Fengram
+```
+
+#### Delete a Store
+
+```bash
+# Requires confirm=true (safety mechanism)
+curl -X DELETE \
+  -H "Authorization: Bearer $ENGRAM_API_KEY" \
+  "https://engram.example.com/api/v1/stores/neuralmux%2Fengram?confirm=true"
+```
+
+### Store-Scoped Operations
+
+#### Ingest to Specific Store
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $ENGRAM_API_KEY" \
+  -H "Content-Type: application/json" \
+  https://engram.example.com/api/v1/stores/neuralmux%2Fengram/lore \
+  -d '{
+    "source_id": "devcontainer-123",
+    "lore": [{
+      "content": "Use connection pooling for database access",
+      "context": "Discovered during performance optimization",
+      "category": "PERFORMANCE_INSIGHT",
+      "confidence": 0.75
+    }]
+  }'
+```
+
+#### Download Store-Specific Snapshot
+
+```bash
+curl -H "Authorization: Bearer $ENGRAM_API_KEY" \
+  https://engram.example.com/api/v1/stores/neuralmux%2Fengram/lore/snapshot \
+  -o neuralmux-engram-snapshot.db
+```
+
+#### Sync Store-Specific Delta
+
+```bash
+curl -H "Authorization: Bearer $ENGRAM_API_KEY" \
+  "https://engram.example.com/api/v1/stores/neuralmux%2Fengram/lore/delta?since=2026-01-31T00:00:00Z"
+```
+
+#### Check Store Health
+
+```bash
+curl https://engram.example.com/api/v1/health?store=neuralmux%2Fengram
+```
+
+### Backward Compatibility
+
+Existing clients using `/api/v1/lore/*` continue to work unchanged. These routes operate on the `default` store:
+
+```bash
+# These are equivalent:
+curl -X POST ... https://engram.example.com/api/v1/lore
+curl -X POST ... https://engram.example.com/api/v1/stores/default/lore
+```
+
+### Recall Client Configuration
+
+Configure Recall to use a specific store:
+
+**Environment Variable:**
+
+```bash
+export ENGRAM_STORE="neuralmux/engram"
+```
+
+**BMAD Config:**
+
+```yaml
+# _bmad/apexflow/config.yaml
+engram_store: "neuralmux/engram"
+```
+
+The Recall client automatically includes the store in all API requests.
+
+See the [Multi-Store Guide](multi-store.md) for detailed configuration and common patterns.
+
+---
+
 ## Error Handling
 
 ### Validation Errors

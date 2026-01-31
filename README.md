@@ -39,6 +39,7 @@ Engram enables AI agents to accumulate, persist, and recall experiential knowled
 - **Confidence Scoring** — Lore quality improves through agent feedback
 - **Automatic Deduplication** — Semantically similar entries merge intelligently
 - **Delta Synchronization** — Efficient sync keeps all environments current
+- **Multi-Store Isolation** — Separate knowledge bases per project or team
 - **Background Workers** — Embedding generation, confidence decay, and snapshots run automatically
 
 ## Example Use Flow with Agents
@@ -294,6 +295,7 @@ See [Systemd Setup Guide](docs/systemd-setup-guide.md) for detailed instructions
 - [Getting Started](docs/getting-started.md) — Installation and first steps
 - [Configuration](docs/configuration.md) — All configuration options
 - [API Usage](docs/api-usage.md) — Endpoint examples and workflows
+- [Multi-Store Guide](docs/multi-store.md) — Isolate lore by project
 - [Systemd Setup](docs/systemd-setup-guide.md) — Running as a Linux service
 - [macOS Service](docs/macos-launchagent-setup.md) — Running as a macOS service via Homebrew
 - [Error Reference](docs/errors.md) — Error types and troubleshooting
@@ -319,3 +321,12 @@ engram/
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
+
+## Author
+
+**Lauri Jutila**
+[ljuti@nmux.dev](mailto:ljuti@nmux.dev)
+
+## Sponsorship
+
+This project is sponsored by [NeuralMux](https://neuralmux.com) and is part of the [Hyper Engineering](https://hyperengineering.com) initiative to advance the union of human creativity and machine intelligence to build systems at extremes of scale, resilience, and performance.
