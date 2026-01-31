@@ -295,6 +295,7 @@ See [Systemd Setup Guide](docs/systemd-setup-guide.md) for detailed instructions
 - [Configuration](docs/configuration.md) — All configuration options
 - [API Usage](docs/api-usage.md) — Endpoint examples and workflows
 - [Systemd Setup](docs/systemd-setup-guide.md) — Running as a Linux service
+- [macOS LaunchAgent](docs/macos-launchagent-setup.md) — Running as a macOS service
 - [Error Reference](docs/errors.md) — Error types and troubleshooting
 - [Technical Design](docs/engram.md) — Architecture and design decisions
 
