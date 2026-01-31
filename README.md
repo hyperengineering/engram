@@ -300,6 +300,7 @@ See [Systemd Setup Guide](docs/systemd-setup-guide.md) for detailed instructions
 - [macOS Service](docs/macos-launchagent-setup.md) — Running as a macOS service via Homebrew
 - [Error Reference](docs/errors.md) — Error types and troubleshooting
 - [Technical Design](docs/engram.md) — Architecture and design decisions
+- [Release Checklist](docs/release-checklist.md) — Release process for maintainers
 
 ## Project Structure
 
