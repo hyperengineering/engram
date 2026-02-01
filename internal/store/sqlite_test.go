@@ -4549,6 +4549,114 @@ func TestGenerateSnapshot_UsesInstanceMetadata(t *testing.T) {
 	}
 }
 
+// --- lastDecay Instance Isolation Tests (BUG-003) ---
+
+func TestLastDecay_IsPerInstance(t *testing.T) {
+	storeA, err := NewSQLiteStore(":memory:", WithStoreID("store-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeA.Close()
+
+	storeB, err := NewSQLiteStore(":memory:", WithStoreID("store-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeB.Close()
+
+	// Initially both should have nil lastDecay
+	if storeA.GetLastDecay() != nil {
+		t.Error("Expected store A to have nil lastDecay initially")
+	}
+	if storeB.GetLastDecay() != nil {
+		t.Error("Expected store B to have nil lastDecay initially")
+	}
+
+	// Set lastDecay on store A
+	nowA := time.Now().UTC()
+	storeA.SetLastDecay(nowA)
+
+	// Verify store A has lastDecay
+	decayA := storeA.GetLastDecay()
+	if decayA == nil {
+		t.Fatal("Expected store A to have lastDecay set")
+	}
+	if !decayA.Equal(nowA) {
+		t.Errorf("Expected store A lastDecay %v, got %v", nowA, *decayA)
+	}
+
+	// Verify store B still has nil lastDecay (isolation)
+	if storeB.GetLastDecay() != nil {
+		t.Error("Expected store B to still have nil lastDecay - value leaked between instances!")
+	}
+
+	// Set different lastDecay on store B
+	nowB := nowA.Add(time.Hour)
+	storeB.SetLastDecay(nowB)
+
+	// Verify store A lastDecay is unchanged
+	decayA = storeA.GetLastDecay()
+	if !decayA.Equal(nowA) {
+		t.Errorf("Store A lastDecay was modified when setting store B - expected %v, got %v", nowA, *decayA)
+	}
+
+	// Verify store B has its own lastDecay
+	decayB := storeB.GetLastDecay()
+	if decayB == nil {
+		t.Fatal("Expected store B to have lastDecay set")
+	}
+	if !decayB.Equal(nowB) {
+		t.Errorf("Expected store B lastDecay %v, got %v", nowB, *decayB)
+	}
+}
+
+func TestGetExtendedStats_ReturnsPerInstanceLastDecay(t *testing.T) {
+	storeA, err := NewSQLiteStore(":memory:", WithStoreID("store-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeA.Close()
+
+	storeB, err := NewSQLiteStore(":memory:", WithStoreID("store-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeB.Close()
+
+	ctx := context.Background()
+
+	// Set different decay times
+	decayTimeA := time.Now().UTC().Add(-time.Hour)
+	decayTimeB := time.Now().UTC().Add(-2 * time.Hour)
+	storeA.SetLastDecay(decayTimeA)
+	storeB.SetLastDecay(decayTimeB)
+
+	// Get stats from each store
+	statsA, err := storeA.GetExtendedStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statsB, err := storeB.GetExtendedStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify each returns its own lastDecay
+	if statsA.LastDecay == nil {
+		t.Fatal("Expected statsA.LastDecay to be set")
+	}
+	if !statsA.LastDecay.Equal(decayTimeA) {
+		t.Errorf("Expected statsA.LastDecay %v, got %v", decayTimeA, *statsA.LastDecay)
+	}
+
+	if statsB.LastDecay == nil {
+		t.Fatal("Expected statsB.LastDecay to be set")
+	}
+	if !statsB.LastDecay.Equal(decayTimeB) {
+		t.Errorf("Expected statsB.LastDecay %v, got %v", decayTimeB, *statsB.LastDecay)
+	}
+}
+
 // Helper function to generate test IDs using ULID format
 func generateTestID() string {
 	// Use ulid.Make() for proper ULID generation

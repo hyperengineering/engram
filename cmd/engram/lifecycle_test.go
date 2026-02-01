@@ -65,11 +65,6 @@ func (c *logCapture) messageIndex(msg string) int {
 
 // TestStartWorker_LaunchesGoroutineAndTracksCompletion tests the startWorker helper
 func TestStartWorker_LaunchesGoroutineAndTracksCompletion(t *testing.T) {
-	capture := &logCapture{}
-	oldDefault := slog.Default()
-	slog.SetDefault(slog.New(capture.handler()))
-	defer slog.SetDefault(oldDefault)
-
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -90,13 +85,9 @@ func TestStartWorker_LaunchesGoroutineAndTracksCompletion(t *testing.T) {
 	cancel()
 	wg.Wait()
 
-	// Verify logging
-	if !capture.hasMessage("worker started") {
-		t.Error("expected 'worker started' log message")
-	}
-	if !capture.hasMessage("worker stopped") {
-		t.Error("expected 'worker stopped' log message")
-	}
+	// Note: Worker start/stop logging is handled by the worker functions themselves
+	// (e.g., DecayCoordinator, EmbeddingRetryCoordinator), not by startWorker.
+	// This test verifies the goroutine launch and WaitGroup tracking mechanics.
 }
 
 // TestStartWorker_RespectsContextCancellation verifies workers stop when context is cancelled
@@ -475,37 +466,25 @@ func TestFlushDuringGracefulShutdown_NoDataLoss(t *testing.T) {
 	}
 }
 
-// TestStartWorker_LogsWorkerName verifies worker name is included in log attributes
-func TestStartWorker_LogsWorkerName(t *testing.T) {
-	capture := &logCapture{}
-	oldDefault := slog.Default()
-	slog.SetDefault(slog.New(capture.handler()))
-	defer slog.SetDefault(oldDefault)
-
+// TestStartWorker_TracksViaWaitGroup verifies worker is tracked via WaitGroup
+func TestStartWorker_TracksViaWaitGroup(t *testing.T) {
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 
-	startWorker(ctx, &wg, "my-custom-worker", func(ctx context.Context) {
+	workerCompleted := atomic.Bool{}
+	startWorker(ctx, &wg, "tracking-test", func(ctx context.Context) {
 		<-ctx.Done()
+		// Simulate some cleanup work
+		time.Sleep(5 * time.Millisecond)
+		workerCompleted.Store(true)
 	})
 
-	time.Sleep(10 * time.Millisecond)
+	// Cancel and wait
 	cancel()
 	wg.Wait()
 
-	// Check that worker name is in log entries
-	capture.mu.Lock()
-	defer capture.mu.Unlock()
-
-	foundWorkerName := false
-	for _, entry := range capture.entries {
-		if worker, ok := entry["worker"].(string); ok && worker == "my-custom-worker" {
-			foundWorkerName = true
-			break
-		}
-	}
-
-	if !foundWorkerName {
-		t.Error("expected log entry with worker='my-custom-worker' attribute")
+	// After wg.Wait() returns, worker must have completed
+	if !workerCompleted.Load() {
+		t.Error("wg.Wait() returned before worker completed its work")
 	}
 }

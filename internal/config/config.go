@@ -54,6 +54,7 @@ type WorkerConfig struct {
 	DecayInterval             Duration `yaml:"decay_interval"`
 	EmbeddingRetryInterval    Duration `yaml:"embedding_retry_interval"`
 	EmbeddingRetryMaxAttempts int      `yaml:"embedding_retry_max_attempts"`
+	EmbeddingRetryBatchSize   int      `yaml:"embedding_retry_batch_size"`
 }
 
 // LogConfig contains logging settings.
@@ -176,6 +177,7 @@ func newDefaults() *Config {
 			DecayInterval:             Duration(24 * time.Hour),
 			EmbeddingRetryInterval:    Duration(5 * time.Minute),
 			EmbeddingRetryMaxAttempts: 10,
+			EmbeddingRetryBatchSize:   50,
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -272,6 +274,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("ENGRAM_EMBEDDING_RETRY_MAX_ATTEMPTS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Worker.EmbeddingRetryMaxAttempts = n
+		}
+	}
+	if v := os.Getenv("ENGRAM_EMBEDDING_RETRY_BATCH_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Worker.EmbeddingRetryBatchSize = n
 		}
 	}
 

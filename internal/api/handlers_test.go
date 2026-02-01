@@ -106,6 +106,14 @@ func (m *mockStore) DecayConfidence(ctx context.Context, threshold time.Time, am
 	return 0, nil
 }
 
+func (m *mockStore) SetLastDecay(t time.Time) {
+	// No-op for testing
+}
+
+func (m *mockStore) GetLastDecay() *time.Time {
+	return nil
+}
+
 func (m *mockStore) GetPendingEmbeddings(ctx context.Context, limit int) ([]types.LoreEntry, error) {
 	return nil, nil
 }

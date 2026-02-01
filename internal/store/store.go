@@ -22,6 +22,8 @@ type Store interface {
 	GetSnapshotPath(ctx context.Context) (string, error)
 	RecordFeedback(ctx context.Context, feedback []types.FeedbackEntry) (*types.FeedbackResult, error)
 	DecayConfidence(ctx context.Context, threshold time.Time, amount float64) (int64, error)
+	SetLastDecay(t time.Time)
+	GetLastDecay() *time.Time
 	GetPendingEmbeddings(ctx context.Context, limit int) ([]types.LoreEntry, error)
 	UpdateEmbedding(ctx context.Context, id string, embedding []float32) error
 	MarkEmbeddingFailed(ctx context.Context, id string) error

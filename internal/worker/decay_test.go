@@ -37,6 +37,10 @@ func (m *mockDecayStore) getCalls() []decayCall {
 	return append([]decayCall{}, m.calls...)
 }
 
+func (m *mockDecayStore) SetLastDecay(t time.Time) {
+	// No-op for testing - we don't need to track this in tests
+}
+
 func TestConfidenceDecayWorker_RunsOnSchedule(t *testing.T) {
 	store := &mockDecayStore{affectedCount: 5}
 	worker := NewConfidenceDecayWorker(store, 50*time.Millisecond, 0.01)

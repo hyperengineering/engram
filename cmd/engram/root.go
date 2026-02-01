@@ -111,31 +111,35 @@ func run(cmd *cobra.Command, args []string) error {
 	// 10. Worker lifecycle infrastructure
 	var wg sync.WaitGroup
 
-	// Initialize and start embedding retry worker
-	embeddingRetryWorker := worker.NewEmbeddingRetryWorker(
-		db,
+	// Initialize store manager adapters for multi-store workers
+	storeAdapter := worker.NewStoreManagerAdapter(storeManager)
+	decayAdapter := worker.NewDecayStoreManagerAdapter(storeManager)
+	embeddingAdapter := worker.NewEmbeddingStoreManagerAdapter(storeManager)
+
+	// Initialize and start embedding retry coordinator (multi-store aware)
+	embeddingCoordinator := worker.NewEmbeddingRetryCoordinator(
+		embeddingAdapter,
 		embedder,
 		time.Duration(cfg.Worker.EmbeddingRetryInterval),
 		cfg.Worker.EmbeddingRetryMaxAttempts,
-		50, // batch size
+		cfg.Worker.EmbeddingRetryBatchSize,
 	)
-	startWorker(ctx, &wg, "embedding-retry", embeddingRetryWorker.Run)
+	startWorker(ctx, &wg, "embedding-coordinator", embeddingCoordinator.Run)
 
 	// Initialize and start snapshot coordinator (multi-store aware)
-	storeAdapter := worker.NewStoreManagerAdapter(storeManager)
 	snapshotCoordinator := worker.NewSnapshotCoordinator(
 		storeAdapter,
 		time.Duration(cfg.Worker.SnapshotInterval),
 	)
 	startWorker(ctx, &wg, "snapshot-coordinator", snapshotCoordinator.Run)
 
-	// Initialize and start confidence decay worker
-	decayWorker := worker.NewConfidenceDecayWorker(
-		db,
+	// Initialize and start confidence decay coordinator (multi-store aware)
+	decayCoordinator := worker.NewDecayCoordinator(
+		decayAdapter,
 		time.Duration(cfg.Worker.DecayInterval),
 		store.DefaultDecayAmount,
 	)
-	startWorker(ctx, &wg, "confidence-decay", decayWorker.Run)
+	startWorker(ctx, &wg, "decay-coordinator", decayCoordinator.Run)
 
 	// 11. Start HTTP server in goroutine
 	go func() {
@@ -190,12 +194,11 @@ func parseLogLevel(level string) slog.Level {
 
 // startWorker launches a background worker goroutine that respects context cancellation.
 // Workers are tracked via WaitGroup for graceful shutdown.
+// Note: Workers log their own start/stop messages with detailed context.
 func startWorker(ctx context.Context, wg *sync.WaitGroup, name string, fn func(ctx context.Context)) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		slog.Info("worker started", "worker", name)
 		fn(ctx)
-		slog.Info("worker stopped", "worker", name)
 	}()
 }

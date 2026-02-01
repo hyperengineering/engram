@@ -96,6 +96,7 @@ type SQLiteStore struct {
 	cfg          Config
 	snapshotMu   sync.Mutex
 	lastSnapshot *time.Time
+	lastDecay    atomic.Pointer[time.Time]    // Per-instance decay tracking (thread-safe)
 	snapshotMeta atomic.Pointer[snapshotMeta] // Per-instance snapshot metadata
 }
 
@@ -248,12 +249,17 @@ func (s *SQLiteStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 	}, nil
 }
 
-// lastDecay tracks when confidence decay last ran (package level for stats access)
-var lastDecay *time.Time
+// SetLastDecay updates the last decay timestamp for this store instance.
+// Called by the decay coordinator after successful decay.
+// Thread-safe via atomic.Pointer.
+func (s *SQLiteStore) SetLastDecay(t time.Time) {
+	s.lastDecay.Store(&t)
+}
 
-// SetLastDecay updates the last decay timestamp (called by decay worker)
-func SetLastDecay(t time.Time) {
-	lastDecay = &t
+// GetLastDecay returns the last decay timestamp for this store instance.
+// Thread-safe via atomic.Pointer.
+func (s *SQLiteStore) GetLastDecay() *time.Time {
+	return s.lastDecay.Load()
 }
 
 // snapshotMeta holds observability data captured at snapshot generation.
@@ -292,8 +298,8 @@ func (s *SQLiteStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStat
 	stats := &types.ExtendedStats{
 		CategoryStats: make(map[string]int64),
 		StatsAsOf:     now,
-		LastSnapshot:  s.lastSnapshot, // Backward compatibility
-		LastDecay:     lastDecay,
+		LastSnapshot:  s.lastSnapshot,    // Backward compatibility
+		LastDecay:     s.lastDecay.Load(), // Per-instance decay tracking (thread-safe)
 	}
 
 	// Main aggregates query (single pass for most metrics)

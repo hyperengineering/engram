@@ -4,13 +4,12 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
-	"github.com/hyperengineering/engram/internal/store"
 )
 
 // DecayStore defines the store operations needed by the decay worker.
 type DecayStore interface {
 	DecayConfidence(ctx context.Context, threshold time.Time, amount float64) (int64, error)
+	SetLastDecay(t time.Time)
 }
 
 // ConfidenceDecayWorker periodically decays confidence on stale lore entries.
@@ -85,7 +84,7 @@ func (w *ConfidenceDecayWorker) runDecay(ctx context.Context) {
 	}
 
 	// Update last decay timestamp for stats endpoint
-	store.SetLastDecay(time.Now().UTC())
+	w.store.SetLastDecay(time.Now().UTC())
 
 	duration := time.Since(start)
 	slog.Info("decay cycle completed",
