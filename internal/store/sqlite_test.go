@@ -4168,15 +4168,13 @@ func TestGetExtendedStats_IncludesTimestamps(t *testing.T) {
 }
 
 func TestGetExtendedStats_SnapshotStatsNoSnapshot(t *testing.T) {
-	// Clear any existing snapshot meta
-	ClearSnapshotMeta()
-
 	db, err := NewSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
+	// Instance snapshot metadata should be nil by default
 	stats, err := db.GetExtendedStats(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -4194,16 +4192,16 @@ func TestGetExtendedStats_SnapshotStatsNoSnapshot(t *testing.T) {
 }
 
 func TestGetExtendedStats_SnapshotStatsWithSnapshot(t *testing.T) {
-	// Set up snapshot metadata
-	generatedAt := time.Now().UTC().Add(-2 * time.Second)
-	SetSnapshotMeta(100, 1048576, generatedAt)
-	defer ClearSnapshotMeta()
-
 	db, err := NewSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+
+	// Set up snapshot metadata on the store instance
+	generatedAt := time.Now().UTC().Add(-2 * time.Second)
+	db.SetSnapshotMeta(100, 1048576, generatedAt)
+	defer db.ClearSnapshotMeta()
 
 	// Add some lore entries to test pending calculation
 	entries := []types.NewLoreEntry{
@@ -4246,16 +4244,16 @@ func TestGetExtendedStats_SnapshotStatsWithSnapshot(t *testing.T) {
 }
 
 func TestGetExtendedStats_SnapshotStatsBackwardCompat(t *testing.T) {
-	// Set up snapshot metadata
-	generatedAt := time.Now().UTC()
-	SetSnapshotMeta(50, 512000, generatedAt)
-	defer ClearSnapshotMeta()
-
 	db, err := NewSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+
+	// Set up snapshot metadata on the store instance
+	generatedAt := time.Now().UTC()
+	db.SetSnapshotMeta(50, 512000, generatedAt)
+	defer db.ClearSnapshotMeta()
 
 	// Also set the old lastSnapshot field
 	db.lastSnapshot = &generatedAt
@@ -4284,7 +4282,6 @@ func TestGenerateSnapshot_CapturesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	defer ClearSnapshotMeta()
 
 	// Add some lore entries
 	entries := []types.NewLoreEntry{
@@ -4302,8 +4299,8 @@ func TestGenerateSnapshot_CapturesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Check metadata was captured
-	meta := GetSnapshotMeta()
+	// Check metadata was captured on the instance
+	meta := db.GetSnapshotMeta()
 	if meta == nil {
 		t.Fatal("Snapshot metadata should be set after generation")
 	}
@@ -4330,7 +4327,6 @@ func TestGenerateSnapshot_MetadataIncludesLoreCountInLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	defer ClearSnapshotMeta()
 
 	// Add entries
 	entries := []types.NewLoreEntry{
@@ -4348,9 +4344,208 @@ func TestGenerateSnapshot_MetadataIncludesLoreCountInLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta := GetSnapshotMeta()
+	meta := db.GetSnapshotMeta()
 	if meta.loreCount != 3 {
 		t.Errorf("Expected lore count 3 for logging, got %d", meta.loreCount)
+	}
+}
+
+// --- StoreOption Tests (BUG-002) ---
+
+func TestNewSQLiteStore_WithStoreID(t *testing.T) {
+	// Test that WithStoreID option sets the storeID field
+	db, err := NewSQLiteStore(":memory:", WithStoreID("test-store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Verify storeID is set
+	if db.storeID != "test-store" {
+		t.Errorf("Expected storeID %q, got %q", "test-store", db.storeID)
+	}
+}
+
+func TestNewSQLiteStore_WithoutOptions(t *testing.T) {
+	// Test that NewSQLiteStore works without options (backward compatibility)
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// storeID should be empty when not set
+	if db.storeID != "" {
+		t.Errorf("Expected empty storeID, got %q", db.storeID)
+	}
+}
+
+func TestNewSQLiteStore_MultipleOptions(t *testing.T) {
+	// Test that multiple options can be applied
+	db, err := NewSQLiteStore(":memory:", WithStoreID("multi-option-store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if db.storeID != "multi-option-store" {
+		t.Errorf("Expected storeID %q, got %q", "multi-option-store", db.storeID)
+	}
+}
+
+// --- Snapshot Metadata Isolation Tests (BUG-002) ---
+
+func TestSnapshotMetadata_InstanceIsolation(t *testing.T) {
+	// Create two separate store instances
+	storeA, err := NewSQLiteStore(":memory:", WithStoreID("store-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeA.Close()
+
+	storeB, err := NewSQLiteStore(":memory:", WithStoreID("store-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeB.Close()
+
+	// Initially both should have nil metadata
+	if storeA.GetSnapshotMeta() != nil {
+		t.Error("Expected store A to have nil metadata initially")
+	}
+	if storeB.GetSnapshotMeta() != nil {
+		t.Error("Expected store B to have nil metadata initially")
+	}
+
+	// Set metadata on store A
+	now := time.Now().UTC()
+	storeA.SetSnapshotMeta(100, 1024, now)
+
+	// Verify store A has metadata
+	metaA := storeA.GetSnapshotMeta()
+	if metaA == nil {
+		t.Fatal("Expected store A to have metadata")
+	}
+	if metaA.loreCount != 100 {
+		t.Errorf("Expected store A lore count 100, got %d", metaA.loreCount)
+	}
+
+	// Verify store B still has nil metadata (isolation)
+	if storeB.GetSnapshotMeta() != nil {
+		t.Error("Expected store B to still have nil metadata - metadata leaked between instances!")
+	}
+
+	// Set different metadata on store B
+	storeB.SetSnapshotMeta(50, 512, now)
+
+	// Verify store A metadata is unchanged
+	metaA = storeA.GetSnapshotMeta()
+	if metaA.loreCount != 100 {
+		t.Errorf("Store A metadata was modified when setting store B - expected 100, got %d", metaA.loreCount)
+	}
+
+	// Verify store B has its own metadata
+	metaB := storeB.GetSnapshotMeta()
+	if metaB == nil {
+		t.Fatal("Expected store B to have metadata")
+	}
+	if metaB.loreCount != 50 {
+		t.Errorf("Expected store B lore count 50, got %d", metaB.loreCount)
+	}
+}
+
+func TestSnapshotMetadata_ClearIsPerInstance(t *testing.T) {
+	storeA, err := NewSQLiteStore(":memory:", WithStoreID("store-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeA.Close()
+
+	storeB, err := NewSQLiteStore(":memory:", WithStoreID("store-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeB.Close()
+
+	now := time.Now().UTC()
+	storeA.SetSnapshotMeta(100, 1024, now)
+	storeB.SetSnapshotMeta(50, 512, now)
+
+	// Clear store A metadata
+	storeA.ClearSnapshotMeta()
+
+	// Store A should be nil
+	if storeA.GetSnapshotMeta() != nil {
+		t.Error("Expected store A metadata to be cleared")
+	}
+
+	// Store B should still have metadata
+	metaB := storeB.GetSnapshotMeta()
+	if metaB == nil {
+		t.Error("Expected store B to still have metadata after clearing store A")
+	}
+	if metaB.loreCount != 50 {
+		t.Errorf("Expected store B lore count 50, got %d", metaB.loreCount)
+	}
+}
+
+func TestGenerateSnapshot_UsesInstanceMetadata(t *testing.T) {
+	// Create temp directory for snapshot files
+	tmpDir := t.TempDir()
+
+	storeA, err := NewSQLiteStore(filepath.Join(tmpDir, "a", "engram.db"), WithStoreID("store-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeA.Close()
+
+	storeB, err := NewSQLiteStore(filepath.Join(tmpDir, "b", "engram.db"), WithStoreID("store-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeB.Close()
+
+	// Ingest different amounts of lore into each store
+	entriesA := []types.NewLoreEntry{
+		{Content: "Lore A1", Category: "test", Confidence: 0.5, SourceID: "test"},
+		{Content: "Lore A2", Category: "test", Confidence: 0.5, SourceID: "test"},
+		{Content: "Lore A3", Category: "test", Confidence: 0.5, SourceID: "test"},
+	}
+	entriesB := []types.NewLoreEntry{
+		{Content: "Lore B1", Category: "test", Confidence: 0.5, SourceID: "test"},
+	}
+
+	ctx := context.Background()
+	if _, err := storeA.IngestLore(ctx, entriesA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storeB.IngestLore(ctx, entriesB); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate snapshots for both stores
+	if err := storeA.GenerateSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeB.GenerateSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify each store has its own metadata with correct lore count
+	metaA := storeA.GetSnapshotMeta()
+	if metaA == nil {
+		t.Fatal("Expected store A to have snapshot metadata")
+	}
+	if metaA.loreCount != 3 {
+		t.Errorf("Expected store A lore count 3, got %d", metaA.loreCount)
+	}
+
+	metaB := storeB.GetSnapshotMeta()
+	if metaB == nil {
+		t.Fatal("Expected store B to have snapshot metadata")
+	}
+	if metaB.loreCount != 1 {
+		t.Errorf("Expected store B lore count 1, got %d", metaB.loreCount)
 	}
 }
 

@@ -382,6 +382,71 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 
+  /stores/{store_id}/stats:
+    get:
+      tags: [Monitoring]
+      summary: Get extended statistics for a store
+      description: |
+        Returns comprehensive system metrics for a specific store including lore counts,
+        embedding pipeline health, category distribution, and quality metrics. This endpoint
+        is public (no authentication required) to enable monitoring tool integration.
+      operationId: getStoreStats
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/StoreIdPath'
+      responses:
+        '200':
+          description: Extended statistics for the store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtendedStats'
+              example:
+                store_id: "neuralmux/engram"
+                total_lore: 850
+                active_lore: 847
+                deleted_lore: 3
+                embedding_stats:
+                  complete: 840
+                  pending: 7
+                  failed: 0
+                snapshot_stats:
+                  lore_count: 835
+                  size_bytes: 2097152
+                  generated_at: "2026-01-31T08:18:54Z"
+                  age_seconds: 3600
+                  pending_entries: 12
+                  available: true
+                category_stats:
+                  ARCHITECTURAL_DECISION: 125
+                  PATTERN_OUTCOME: 89
+                  DEPENDENCY_BEHAVIOR: 156
+                quality_stats:
+                  average_confidence: 0.72
+                  validated_count: 156
+                  high_confidence_count: 312
+                  low_confidence_count: 45
+                unique_source_count: 8
+                stats_as_of: "2026-01-31T10:30:00Z"
+        '404':
+          description: Store not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: "https://engram.dev/errors/not-found"
+                title: "Not Found"
+                status: 404
+                detail: "Store not found: unknown-store"
+                instance: "/api/v1/stores/unknown-store/stats"
+        '500':
+          description: Internal server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   # === Store-Scoped Lore Endpoints ===
 
   /stores/{store_id}/lore:
@@ -1465,6 +1530,12 @@ components:
           format: date-time
           description: Timestamp when these stats were computed
           example: "2026-01-30T15:45:32Z"
+        store_id:
+          type: string
+          description: |
+            Store ID (only present when accessed via store-scoped route like /stores/{store_id}/stats).
+            Omitted for non-scoped /stats endpoint.
+          example: "neuralmux/engram"
 
     SnapshotStats:
       type: object

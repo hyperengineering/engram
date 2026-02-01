@@ -705,6 +705,181 @@ func TestStats_EmptyCategoryStatsIsObject(t *testing.T) {
 	}
 }
 
+func TestStats_UsesStoreFromContext(t *testing.T) {
+	// Create a handler with one store (default)
+	defaultStore := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:  100,
+			ActiveLore: 100,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(defaultStore, embedder, "api-key", "1.0.0")
+
+	// Create a different store to inject via context
+	contextStore := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:  999, // Different value to verify correct store is used
+			ActiveLore: 888,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+
+	// Inject the context store into the request context
+	ctx := WithStore(req.Context(), contextStore)
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.ExtendedStats
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Should return stats from context store (999), not default store (100)
+	if resp.TotalLore != 999 {
+		t.Errorf("total_lore = %d, want 999 (from context store, not default)", resp.TotalLore)
+	}
+	if resp.ActiveLore != 888 {
+		t.Errorf("active_lore = %d, want 888 (from context store)", resp.ActiveLore)
+	}
+}
+
+func TestStats_IncludesStoreIDWhenScopedRoute(t *testing.T) {
+	// Test that store_id is included in response when accessed via store-scoped route
+	contextStore := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:  50,
+			ActiveLore: 45,
+		},
+	}
+	defaultStore := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:  100,
+			ActiveLore: 100,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(defaultStore, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/my-project/stats", nil)
+
+	// Inject store, store ID, and scoped flag into context (simulates store-scoped middleware)
+	ctx := WithStore(req.Context(), contextStore)
+	ctx = WithStoreID(ctx, "my-project")
+	ctx = WithStoreScoped(ctx)
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.ExtendedStats
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Verify store_id is included in response
+	if resp.StoreID != "my-project" {
+		t.Errorf("store_id = %q, want %q", resp.StoreID, "my-project")
+	}
+
+	// Verify data comes from context store
+	if resp.TotalLore != 50 {
+		t.Errorf("total_lore = %d, want 50 (from context store)", resp.TotalLore)
+	}
+}
+
+func TestStats_OmitsStoreIDWhenNotScoped(t *testing.T) {
+	// Test that store_id is omitted when accessed via non-scoped route
+	defaultStore := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:  100,
+			ActiveLore: 100,
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(defaultStore, embedder, "api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	// Note: No store ID in context (simulates non-scoped route)
+
+	w := httptest.NewRecorder()
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Parse as raw JSON to check store_id is not present
+	var rawResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// store_id should not be present (omitempty)
+	if _, ok := rawResp["store_id"]; ok {
+		t.Errorf("store_id should be omitted when not scoped, got %v", rawResp["store_id"])
+	}
+}
+
+func TestStats_FallsBackToDefaultStore(t *testing.T) {
+	// Create a handler with a default store
+	defaultStore := &mockStore{
+		extendedStats: &types.ExtendedStats{
+			TotalLore:     42,
+			ActiveLore:    40,
+			DeletedLore:   2,
+			CategoryStats: map[string]int64{"PATTERN_OUTCOME": 10, "EDGE_CASE_DISCOVERY": 32},
+		},
+	}
+	embedder := &mockEmbedder{model: "text-embedding-3-small"}
+	handler := newTestHandler(defaultStore, embedder, "api-key", "1.0.0")
+
+	// Create a request WITHOUT injecting any store into context
+	// This simulates a normal request that doesn't go through store-scoped middleware
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	// Note: We do NOT call WithStore or modify the context
+
+	w := httptest.NewRecorder()
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp types.ExtendedStats
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Should return stats from default store (h.store) since no store in context
+	if resp.TotalLore != 42 {
+		t.Errorf("total_lore = %d, want 42 (from default store)", resp.TotalLore)
+	}
+	if resp.ActiveLore != 40 {
+		t.Errorf("active_lore = %d, want 40 (from default store)", resp.ActiveLore)
+	}
+	if resp.DeletedLore != 2 {
+		t.Errorf("deleted_lore = %d, want 2 (from default store)", resp.DeletedLore)
+	}
+	if len(resp.CategoryStats) != 2 {
+		t.Errorf("category_stats length = %d, want 2", len(resp.CategoryStats))
+	}
+	if resp.CategoryStats["PATTERN_OUTCOME"] != 10 {
+		t.Errorf("category_stats[PATTERN_OUTCOME] = %d, want 10", resp.CategoryStats["PATTERN_OUTCOME"])
+	}
+}
+
 // --- IngestLore Endpoint Tests ---
 
 func TestIngestLore_ValidBatch(t *testing.T) {

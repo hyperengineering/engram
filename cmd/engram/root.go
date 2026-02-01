@@ -99,7 +99,7 @@ func run(cmd *cobra.Command, args []string) error {
 	router := api.NewRouter(handler, storeManager)
 	slog.Info("router initialized")
 
-	// 8. Configure HTTP server
+	// 9. Configure HTTP server
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         addr,
@@ -108,7 +108,7 @@ func run(cmd *cobra.Command, args []string) error {
 		WriteTimeout: time.Duration(cfg.Server.WriteTimeout),
 	}
 
-	// 9. Worker lifecycle infrastructure
+	// 10. Worker lifecycle infrastructure
 	var wg sync.WaitGroup
 
 	// Initialize and start embedding retry worker
@@ -121,12 +121,13 @@ func run(cmd *cobra.Command, args []string) error {
 	)
 	startWorker(ctx, &wg, "embedding-retry", embeddingRetryWorker.Run)
 
-	// Initialize and start snapshot generation worker
-	snapshotWorker := worker.NewSnapshotGenerationWorker(
-		db,
+	// Initialize and start snapshot coordinator (multi-store aware)
+	storeAdapter := worker.NewStoreManagerAdapter(storeManager)
+	snapshotCoordinator := worker.NewSnapshotCoordinator(
+		storeAdapter,
 		time.Duration(cfg.Worker.SnapshotInterval),
 	)
-	startWorker(ctx, &wg, "snapshot-generation", snapshotWorker.Run)
+	startWorker(ctx, &wg, "snapshot-coordinator", snapshotCoordinator.Run)
 
 	// Initialize and start confidence decay worker
 	decayWorker := worker.NewConfidenceDecayWorker(
@@ -136,7 +137,7 @@ func run(cmd *cobra.Command, args []string) error {
 	)
 	startWorker(ctx, &wg, "confidence-decay", decayWorker.Run)
 
-	// 10. Start HTTP server in goroutine
+	// 11. Start HTTP server in goroutine
 	go func() {
 		slog.Info("server starting", "address", addr)
 		// ErrServerClosed is the expected error when Shutdown() is called gracefully.
@@ -147,25 +148,25 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// 11. Block until signal received
+	// 12. Block until signal received
 	<-ctx.Done()
 	slog.Info("shutdown initiated")
 
-	// 12. Graceful shutdown sequence
+	// 13. Graceful shutdown sequence
 	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
 		time.Duration(cfg.Server.ShutdownTimeout))
 	defer shutdownCancel()
 
-	// 12a. Stop HTTP server (drains in-flight requests)
+	// 13a. Stop HTTP server (drains in-flight requests)
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown error", "error", err)
 	}
 
-	// 12b. Wait for workers to complete
+	// 13b. Wait for workers to complete
 	wg.Wait()
 
-	// 12c. Close store
+	// 13c. Close store
 	if err := db.Close(); err != nil {
 		slog.Error("store close error", "error", err)
 	}

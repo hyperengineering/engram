@@ -103,5 +103,51 @@ func TestWithStoreID_EmptyString(t *testing.T) {
 	}
 }
 
+// TestIsStoreScoped_Default verifies false when not scoped.
+func TestIsStoreScoped_Default(t *testing.T) {
+	ctx := context.Background()
+
+	if IsStoreScoped(ctx) {
+		t.Error("IsStoreScoped() = true for empty context, want false")
+	}
+}
+
+// TestIsStoreScoped_WhenScoped verifies true when WithStoreScoped was called.
+func TestIsStoreScoped_WhenScoped(t *testing.T) {
+	ctx := context.Background()
+	ctx = WithStoreScoped(ctx)
+
+	if !IsStoreScoped(ctx) {
+		t.Error("IsStoreScoped() = false after WithStoreScoped, want true")
+	}
+}
+
+// TestStoreScoped_WithOtherContextValues verifies scoped flag is independent.
+func TestStoreScoped_WithOtherContextValues(t *testing.T) {
+	ctx := context.Background()
+	ctx = WithStoreID(ctx, "my-store")
+	ctx = WithStore(ctx, &mockStore{})
+
+	// Not scoped yet
+	if IsStoreScoped(ctx) {
+		t.Error("IsStoreScoped() should be false before WithStoreScoped")
+	}
+
+	// Now scope it
+	ctx = WithStoreScoped(ctx)
+
+	if !IsStoreScoped(ctx) {
+		t.Error("IsStoreScoped() should be true after WithStoreScoped")
+	}
+
+	// Verify other context values are still accessible
+	if StoreIDFromContext(ctx) != "my-store" {
+		t.Error("StoreIDFromContext should still return my-store")
+	}
+	if _, err := StoreFromContext(ctx); err != nil {
+		t.Errorf("StoreFromContext returned error: %v", err)
+	}
+}
+
 // mockStoreForInterface is a compile-time check that mockStore implements store.Store
 var _ store.Store = (*mockStore)(nil)

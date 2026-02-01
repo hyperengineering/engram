@@ -229,6 +229,9 @@ type ExtendedStats struct {
 	LastSnapshot *time.Time `json:"last_snapshot,omitempty"` // Deprecated: Use SnapshotStats.GeneratedAt
 	LastDecay    *time.Time `json:"last_decay,omitempty"`
 	StatsAsOf    time.Time  `json:"stats_as_of"`
+
+	// Store identification (included when accessed via store-scoped route)
+	StoreID string `json:"store_id,omitempty"`
 }
 
 // EmbeddingStats tracks embedding pipeline health.

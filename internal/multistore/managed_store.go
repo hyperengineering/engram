@@ -32,8 +32,8 @@ func NewManagedStore(id, basePath string) (*ManagedStore, error) {
 		return nil, fmt.Errorf("load store metadata: %w", err)
 	}
 
-	// Open SQLite store
-	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	// Open SQLite store with store ID for logging context
+	sqliteStore, err := store.NewSQLiteStore(dbPath, store.WithStoreID(id))
 	if err != nil {
 		return nil, fmt.Errorf("open store database: %w", err)
 	}

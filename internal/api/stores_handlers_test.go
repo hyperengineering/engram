@@ -807,3 +807,130 @@ func TestEncodedStoreID_InPath(t *testing.T) {
 		t.Errorf("expected status 200 for encoded store ID, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// --- Store-Scoped Stats Tests ---
+
+func TestStoreScopedStats_ReturnsStoreStats(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+
+	// Create a store
+	_, err := manager.CreateStore(ctx, "project-a", "Test project")
+	if err != nil {
+		t.Fatalf("CreateStore error = %v", err)
+	}
+
+	defaultStore := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	// Request stats for project-a (no auth required)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/project-a/stats", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ExtendedStats
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Verify we got valid stats (store exists and returns stats)
+	// The actual values depend on the empty store state
+	if resp.TotalLore != 0 {
+		t.Errorf("total_lore = %d, want 0 (empty store)", resp.TotalLore)
+	}
+}
+
+func TestStoreScopedStats_StoreNotFound(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	defaultStore := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	// Request stats for nonexistent store
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/nonexistent/stats", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 for nonexistent store, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestStoreScopedStats_NoAuthRequired(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+
+	// Create a store
+	_, err := manager.CreateStore(ctx, "project-a", "Test project")
+	if err != nil {
+		t.Fatalf("CreateStore error = %v", err)
+	}
+
+	defaultStore := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(defaultStore, manager, embedder, "secret-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	// Request WITHOUT auth header - should still work (public endpoint)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/project-a/stats", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 without auth (public endpoint), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestStoreScopedStats_URLEncodedStoreID(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+
+	// Create a nested store
+	_, err := manager.CreateStore(ctx, "org/project", "Nested project")
+	if err != nil {
+		t.Fatalf("CreateStore error = %v", err)
+	}
+
+	defaultStore := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	// URL-encoded org/project -> org%2Fproject
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/org%2Fproject/stats", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for encoded store ID, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ExtendedStats
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Verify we got valid stats for the nested store
+	if resp.TotalLore != 0 {
+		t.Errorf("total_lore = %d, want 0 (empty store)", resp.TotalLore)
+	}
+}

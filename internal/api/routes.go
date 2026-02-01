@@ -28,6 +28,11 @@ func NewRouter(h *Handler, mgr StoreGetter) *chi.Mux {
 		r.Get("/health", h.Health)
 		r.Get("/stats", h.Stats)
 
+		// Store-scoped public stats (no auth required)
+		if mgr != nil {
+			r.With(StoreContextMiddleware(mgr)).Get("/stores/{store_id}/stats", h.Stats)
+		}
+
 		// Protected routes (auth required)
 		r.Group(func(r chi.Router) {
 			r.Use(AuthMiddleware(h.apiKey))

@@ -215,9 +215,10 @@ func StoreContextMiddleware(mgr StoreGetter) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Inject store and store ID into context
+			// Inject store, store ID, and scoped flag into context
 			ctx := WithStore(r.Context(), managed.Store)
 			ctx = WithStoreID(ctx, decodedID)
+			ctx = WithStoreScoped(ctx)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -231,7 +232,10 @@ func DefaultStoreMiddleware(mgr StoreGetter) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			managed, err := mgr.GetStore(r.Context(), multistore.DefaultStoreID)
 			if err != nil {
-				slog.Error("default store middleware error", "error", err)
+				slog.Error("default store middleware error",
+					"component", "api",
+					"store_id", multistore.DefaultStoreID,
+					"error", err)
 				WriteProblem(w, r, http.StatusInternalServerError,
 					"Internal error: default store unavailable")
 				return

@@ -91,10 +91,22 @@ func addSourceID(sources []string, newSourceID string) ([]string, bool) {
 type SQLiteStore struct {
 	db           *sql.DB
 	dbPath       string
+	storeID      string // Optional identifier for logging context
 	embedder     Embedder
 	cfg          Config
 	snapshotMu   sync.Mutex
 	lastSnapshot *time.Time
+	snapshotMeta atomic.Pointer[snapshotMeta] // Per-instance snapshot metadata
+}
+
+// StoreOption configures optional settings for SQLiteStore.
+type StoreOption func(*SQLiteStore)
+
+// WithStoreID sets the store identifier used in log context.
+func WithStoreID(id string) StoreOption {
+	return func(s *SQLiteStore) {
+		s.storeID = id
+	}
 }
 
 // Embedder is the interface for embedding generation (matches embedding.Embedder).
@@ -112,7 +124,8 @@ type Config interface {
 
 // NewSQLiteStore creates a new SQLiteStore instance.
 // It initializes the database with WAL mode, applies pragmas, and runs migrations.
-func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
+// Optional StoreOption functions can be passed to configure additional settings.
+func NewSQLiteStore(dbPath string, opts ...StoreOption) (*SQLiteStore, error) {
 	// Ensure parent directory exists
 	if dir := filepath.Dir(dbPath); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -143,7 +156,14 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
-	return &SQLiteStore{db: db, dbPath: dbPath}, nil
+	store := &SQLiteStore{db: db, dbPath: dbPath}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(store)
+	}
+
+	return store, nil
 }
 
 // SetDependencies configures the embedder and config for deduplication.
@@ -243,29 +263,26 @@ type snapshotMeta struct {
 	generatedAt time.Time
 }
 
-// currentSnapshotMeta holds the current snapshot metadata (package level for stats access)
-var currentSnapshotMeta atomic.Pointer[snapshotMeta]
-
-// SetSnapshotMeta updates the current snapshot metadata.
+// SetSnapshotMeta updates the snapshot metadata for this store instance.
 // Called after successful snapshot generation.
-func SetSnapshotMeta(loreCount, sizeBytes int64, generatedAt time.Time) {
-	currentSnapshotMeta.Store(&snapshotMeta{
+func (s *SQLiteStore) SetSnapshotMeta(loreCount, sizeBytes int64, generatedAt time.Time) {
+	s.snapshotMeta.Store(&snapshotMeta{
 		loreCount:   loreCount,
 		sizeBytes:   sizeBytes,
 		generatedAt: generatedAt,
 	})
 }
 
-// GetSnapshotMeta returns the current snapshot metadata.
+// GetSnapshotMeta returns the snapshot metadata for this store instance.
 // Returns nil if no snapshot has been generated.
-func GetSnapshotMeta() *snapshotMeta {
-	return currentSnapshotMeta.Load()
+func (s *SQLiteStore) GetSnapshotMeta() *snapshotMeta {
+	return s.snapshotMeta.Load()
 }
 
-// ClearSnapshotMeta clears the current snapshot metadata.
+// ClearSnapshotMeta clears the snapshot metadata for this store instance.
 // Primarily used for testing.
-func ClearSnapshotMeta() {
-	currentSnapshotMeta.Store(nil)
+func (s *SQLiteStore) ClearSnapshotMeta() {
+	s.snapshotMeta.Store(nil)
 }
 
 // GetExtendedStats returns comprehensive system metrics for monitoring.
@@ -345,7 +362,7 @@ func (s *SQLiteStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStat
 	}
 
 	// Build SnapshotStats from metadata
-	meta := GetSnapshotMeta()
+	meta := s.GetSnapshotMeta()
 	if meta != nil {
 		stats.SnapshotStats = types.SnapshotStats{
 			LoreCount:      meta.loreCount,
@@ -477,7 +494,10 @@ func (s *SQLiteStore) IngestLore(ctx context.Context, entries []types.NewLoreEnt
 		embeddings, embeddingErr = s.embedder.EmbedBatch(ctx, contents)
 		if embeddingErr != nil {
 			slog.Warn("embedding generation failed, entries will be stored pending",
-				"error", embeddingErr, "count", len(entries))
+				"component", "store",
+				"store_id", s.storeID,
+				"error", embeddingErr,
+				"count", len(entries))
 		}
 	}
 
@@ -537,6 +557,8 @@ func (s *SQLiteStore) IngestLore(ctx context.Context, entries []types.NewLoreEnt
 	duration := time.Since(start)
 	if duration > 5*time.Second {
 		slog.Warn("ingest batch exceeded performance target",
+			"component", "store",
+			"store_id", s.storeID,
 			"duration_ms", duration.Milliseconds(),
 			"count", len(entries),
 			"accepted", result.Accepted,
@@ -1021,12 +1043,13 @@ func (s *SQLiteStore) GenerateSnapshot(ctx context.Context) error {
 	// Update last snapshot timestamp and metadata
 	now := time.Now().UTC()
 	s.lastSnapshot = &now
-	SetSnapshotMeta(loreCount, sizeBytes, now)
+	s.SetSnapshotMeta(loreCount, sizeBytes, now)
 
 	duration := time.Since(start)
 	slog.Info("snapshot generated",
 		"component", "store",
 		"action", "snapshot_complete",
+		"store_id", s.storeID,
 		"duration_ms", duration.Milliseconds(),
 		"size_bytes", sizeBytes,
 		"lore_count", loreCount,
