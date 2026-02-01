@@ -512,7 +512,8 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 		"store_id", storeID,
 		"source_id", req.SourceID,
 		"remote_addr", r.RemoteAddr,
-		"count", len(result.Updates),
+		"updated_count", len(result.Updates),
+		"skipped_count", len(result.Skipped),
 		"duration_ms", duration.Milliseconds(),
 	)
 

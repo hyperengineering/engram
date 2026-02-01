@@ -1075,7 +1075,8 @@ func (s *SQLiteStore) GetSnapshotPath(ctx context.Context) (string, error) {
 }
 
 // RecordFeedback records feedback entries and adjusts confidence.
-// Uses a transaction for atomic batch processing (fail-fast on missing lore).
+// Uses a transaction for atomic batch processing with partial success semantics:
+// entries that exist are updated, entries that don't exist are skipped and reported.
 func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.FeedbackEntry) (*types.FeedbackResult, error) {
 	if len(feedback) == 0 {
 		return &types.FeedbackResult{Updates: []types.FeedbackResultUpdate{}}, nil
@@ -1090,6 +1091,7 @@ func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.Feedb
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
 	updates := make([]types.FeedbackResultUpdate, 0, len(feedback))
+	skipped := make([]types.FeedbackSkipped, 0)
 
 	for _, entry := range feedback {
 		// Fetch current lore entry
@@ -1105,7 +1107,12 @@ func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.Feedb
 
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return nil, ErrNotFound
+				// Skip this entry instead of failing the entire batch
+				skipped = append(skipped, types.FeedbackSkipped{
+					LoreID: entry.LoreID,
+					Reason: "not_found",
+				})
+				continue
 			}
 			return nil, fmt.Errorf("fetch lore entry: %w", err)
 		}
@@ -1173,7 +1180,7 @@ func (s *SQLiteStore) RecordFeedback(ctx context.Context, feedback []types.Feedb
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
-	return &types.FeedbackResult{Updates: updates}, nil
+	return &types.FeedbackResult{Updates: updates, Skipped: skipped}, nil
 }
 
 // DecayConfidence reduces confidence for entries not validated since threshold.

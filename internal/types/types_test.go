@@ -272,6 +272,72 @@ func TestFeedbackEntry_JSONTags(t *testing.T) {
 	}
 }
 
+func TestFeedbackResult_OmitsEmptySkipped(t *testing.T) {
+	// When Skipped is empty, it should be omitted from JSON output
+	result := FeedbackResult{
+		Updates: []FeedbackResultUpdate{
+			{LoreID: "01JTEST000000000000000000", PreviousConfidence: 0.5, CurrentConfidence: 0.58},
+		},
+		Skipped: nil,
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	raw := string(data)
+	if strings.Contains(raw, `"skipped"`) {
+		t.Errorf("Expected skipped to be omitted when nil, got: %s", raw)
+	}
+	if !strings.Contains(raw, `"updates"`) {
+		t.Errorf("Expected updates key in output: %s", raw)
+	}
+}
+
+func TestFeedbackResult_IncludesSkippedWhenPopulated(t *testing.T) {
+	// When Skipped has entries, it should be included in JSON output
+	result := FeedbackResult{
+		Updates: []FeedbackResultUpdate{},
+		Skipped: []FeedbackSkipped{
+			{LoreID: "01JTEST000000000000000001", Reason: "not_found"},
+		},
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	raw := string(data)
+	if !strings.Contains(raw, `"skipped"`) {
+		t.Errorf("Expected skipped key when populated, got: %s", raw)
+	}
+	if !strings.Contains(raw, `"not_found"`) {
+		t.Errorf("Expected not_found reason in output: %s", raw)
+	}
+}
+
+func TestFeedbackSkipped_JSONTags(t *testing.T) {
+	skipped := FeedbackSkipped{
+		LoreID: "01JTEST000000000000000000",
+		Reason: "not_found",
+	}
+
+	data, err := json.Marshal(skipped)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	raw := string(data)
+	requiredKeys := []string{`"lore_id"`, `"reason"`}
+	for _, key := range requiredKeys {
+		if !strings.Contains(raw, key) {
+			t.Errorf("Missing JSON key %s in output: %s", key, raw)
+		}
+	}
+}
+
 func TestNewLoreEntry_Fields(t *testing.T) {
 	entry := NewLoreEntry{
 		Content:    "test content",

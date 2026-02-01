@@ -608,11 +608,23 @@ paths:
               $ref: '#/components/schemas/FeedbackRequest'
       responses:
         '200':
-          description: Feedback processed
+          description: |
+            Feedback processed with partial success semantics.
+            Entries that exist are updated (in `updates`).
+            Entries that don't exist are reported (in `skipped`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FeedbackResult'
+              example:
+                updates:
+                  - lore_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+                    previous_confidence: 0.72
+                    current_confidence: 0.80
+                    validation_count: 3
+                skipped:
+                  - lore_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+                    reason: "not_found"
         '400':
           description: Invalid JSON syntax
           content:
@@ -622,7 +634,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Store or lore entry not found
+          description: Store not found (store-scoped route only)
           content:
             application/problem+json:
               schema:
@@ -865,7 +877,9 @@ paths:
 
         Confidence is capped at 1.0 and floored at 0.0.
 
-        **Fail-fast**: If any lore_id does not exist, the entire batch is rejected.
+        **Partial success**: Entries that exist are updated and returned in `updates`.
+        Entries that don't exist (or are deleted) are reported in `skipped` with reason.
+        The request always succeeds (200) even if some entries are skipped.
       operationId: submitFeedback
       requestBody:
         required: true
@@ -882,7 +896,10 @@ paths:
                   type: "incorrect"
       responses:
         '200':
-          description: Feedback processed successfully
+          description: |
+            Feedback processed with partial success semantics.
+            Entries that exist are updated (in `updates`).
+            Entries that don't exist are reported (in `skipped`).
           content:
             application/json:
               schema:
@@ -893,9 +910,9 @@ paths:
                     previous_confidence: 0.72
                     current_confidence: 0.80
                     validation_count: 3
+                skipped:
                   - lore_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW"
-                    previous_confidence: 0.65
-                    current_confidence: 0.50
+                    reason: "not_found"
         '400':
           description: Invalid JSON syntax
           content:
@@ -904,18 +921,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: One or more lore_id values not found (entire batch rejected)
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-              example:
-                type: "https://engram.dev/errors/not-found"
-                title: "Not Found"
-                status: 404
-                detail: "Resource not found"
-                instance: "/api/v1/lore/feedback"
         '422':
           description: Validation failed (invalid ULID, invalid type, etc.)
           content:
@@ -1392,13 +1397,37 @@ components:
 
     FeedbackResult:
       type: object
-      description: Result of feedback submission
+      description: Result of feedback submission with partial success semantics
+      required:
+        - updates
       properties:
         updates:
           type: array
           items:
             $ref: '#/components/schemas/FeedbackResultUpdate'
-          description: Confidence changes for each entry
+          description: Confidence changes for entries that were successfully updated
+        skipped:
+          type: array
+          description: Entries that could not be processed (e.g., not found or deleted)
+          items:
+            $ref: '#/components/schemas/FeedbackSkipped'
+
+    FeedbackSkipped:
+      type: object
+      description: A feedback entry that could not be processed
+      required:
+        - lore_id
+        - reason
+      properties:
+        lore_id:
+          type: string
+          description: The lore ID that was skipped
+          example: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        reason:
+          type: string
+          enum: [not_found]
+          description: Why the entry was skipped
+          example: "not_found"
 
     FeedbackResultUpdate:
       type: object

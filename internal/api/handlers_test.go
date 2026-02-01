@@ -1997,10 +1997,17 @@ func TestFeedback_Success_Incorrect(t *testing.T) {
 	}
 }
 
-func TestFeedback_LoreNotFound(t *testing.T) {
+func TestFeedback_PartialSuccess_AllSkipped(t *testing.T) {
+	// Mock store returns partial success with skipped entries
+	nonExistentID := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 	s := &mockStore{
-		stats:       &types.StoreStats{},
-		feedbackErr: store.ErrNotFound,
+		stats: &types.StoreStats{},
+		feedbackResult: &types.FeedbackResult{
+			Updates: []types.FeedbackResultUpdate{},
+			Skipped: []types.FeedbackSkipped{
+				{LoreID: nonExistentID, Reason: "not_found"},
+			},
+		},
 	}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
 	handler := newTestHandler(s, embedder, "api-key", "1.0.0")
@@ -2018,13 +2025,33 @@ func TestFeedback_LoreNotFound(t *testing.T) {
 
 	handler.Feedback(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	// Now returns 200 with partial success
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
 	contentType := w.Header().Get("Content-Type")
-	if contentType != "application/problem+json" {
-		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+
+	// Verify response contains skipped entries
+	var result types.FeedbackResult
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(result.Updates) != 0 {
+		t.Errorf("Expected 0 updates, got %d", len(result.Updates))
+	}
+	if len(result.Skipped) != 1 {
+		t.Errorf("Expected 1 skipped, got %d", len(result.Skipped))
+	}
+	if result.Skipped[0].LoreID != nonExistentID {
+		t.Errorf("Skipped LoreID = %q, want %q", result.Skipped[0].LoreID, nonExistentID)
+	}
+	if result.Skipped[0].Reason != "not_found" {
+		t.Errorf("Skipped Reason = %q, want %q", result.Skipped[0].Reason, "not_found")
 	}
 }
 

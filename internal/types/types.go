@@ -159,6 +159,13 @@ type FeedbackEntry struct {
 // FeedbackResult represents the outcome of recording feedback.
 type FeedbackResult struct {
 	Updates []FeedbackResultUpdate `json:"updates"`
+	Skipped []FeedbackSkipped      `json:"skipped,omitempty"`
+}
+
+// FeedbackSkipped represents a feedback entry that could not be processed.
+type FeedbackSkipped struct {
+	LoreID string `json:"lore_id"`
+	Reason string `json:"reason"` // "not_found" or "deleted"
 }
 
 // FeedbackResultUpdate represents a single confidence change from feedback.

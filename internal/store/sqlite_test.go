@@ -2987,23 +2987,40 @@ func TestRecordFeedback_FloorAt0(t *testing.T) {
 	}
 }
 
-func TestRecordFeedback_NotFound(t *testing.T) {
+func TestRecordFeedback_NotFound_ReturnsSkipped(t *testing.T) {
 	db, err := NewSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
+	nonExistentID := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 	feedback := []types.FeedbackEntry{
-		{LoreID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: "helpful", SourceID: "client-1"},
+		{LoreID: nonExistentID, Type: "helpful", SourceID: "client-1"},
 	}
-	_, err = db.RecordFeedback(context.Background(), feedback)
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("Expected ErrNotFound, got %v", err)
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatalf("Expected no error for partial success, got: %v", err)
+	}
+
+	// Verify updates is empty
+	if len(result.Updates) != 0 {
+		t.Errorf("Expected 0 updates, got %d", len(result.Updates))
+	}
+
+	// Verify skipped contains the non-existent entry
+	if len(result.Skipped) != 1 {
+		t.Errorf("Expected 1 skipped, got %d", len(result.Skipped))
+	}
+	if result.Skipped[0].LoreID != nonExistentID {
+		t.Errorf("Skipped LoreID = %q, want %q", result.Skipped[0].LoreID, nonExistentID)
+	}
+	if result.Skipped[0].Reason != "not_found" {
+		t.Errorf("Skipped Reason = %q, want %q", result.Skipped[0].Reason, "not_found")
 	}
 }
 
-func TestRecordFeedback_Transaction(t *testing.T) {
+func TestRecordFeedback_PartialSuccess_TransactionCommits(t *testing.T) {
 	db, err := NewSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -3021,26 +3038,43 @@ func TestRecordFeedback_Transaction(t *testing.T) {
 
 	delta, _ := db.GetDelta(context.Background(), time.Time{})
 	loreID := delta.Lore[0].ID
-	originalConfidence := delta.Lore[0].Confidence
+	nonExistentID := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 	// Batch with one valid and one non-existent ID
 	feedback := []types.FeedbackEntry{
 		{LoreID: loreID, Type: "helpful", SourceID: "client-1"},
-		{LoreID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: "helpful", SourceID: "client-1"}, // non-existent
+		{LoreID: nonExistentID, Type: "helpful", SourceID: "client-1"}, // non-existent
 	}
-	_, err = db.RecordFeedback(context.Background(), feedback)
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("Expected ErrNotFound, got %v", err)
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatalf("Expected no error for partial success, got: %v", err)
 	}
 
-	// Verify first entry was NOT updated (transaction rollback)
+	// Verify first entry WAS updated (partial success commits valid entries)
+	if len(result.Updates) != 1 {
+		t.Errorf("Expected 1 update, got %d", len(result.Updates))
+	}
+	if result.Updates[0].LoreID != loreID {
+		t.Errorf("Update LoreID = %q, want %q", result.Updates[0].LoreID, loreID)
+	}
+
+	// Verify second entry was skipped
+	if len(result.Skipped) != 1 {
+		t.Errorf("Expected 1 skipped, got %d", len(result.Skipped))
+	}
+	if result.Skipped[0].LoreID != nonExistentID {
+		t.Errorf("Skipped LoreID = %q, want %q", result.Skipped[0].LoreID, nonExistentID)
+	}
+
+	// Verify DB state - entry should be updated
 	entry, _ := db.GetLore(context.Background(), loreID)
-	if entry.Confidence != originalConfidence {
-		t.Errorf("Confidence changed to %v despite transaction rollback, want %v", entry.Confidence, originalConfidence)
+	expectedConfidence := 0.58 // 0.5 + 0.08
+	if math.Abs(entry.Confidence-expectedConfidence) > 0.001 {
+		t.Errorf("Confidence = %v, want %v (entry should be updated)", entry.Confidence, expectedConfidence)
 	}
 }
 
-func TestRecordFeedback_SoftDeleted(t *testing.T) {
+func TestRecordFeedback_SoftDeleted_ReturnsSkipped(t *testing.T) {
 	db, err := NewSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -3070,9 +3104,173 @@ func TestRecordFeedback_SoftDeleted(t *testing.T) {
 	feedback := []types.FeedbackEntry{
 		{LoreID: loreID, Type: "helpful", SourceID: "client-1"},
 	}
-	_, err = db.RecordFeedback(context.Background(), feedback)
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("Expected ErrNotFound for soft-deleted entry, got %v", err)
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatalf("Expected no error for partial success with soft-deleted entry, got: %v", err)
+	}
+
+	// Verify updates is empty
+	if len(result.Updates) != 0 {
+		t.Errorf("Expected 0 updates, got %d", len(result.Updates))
+	}
+
+	// Verify skipped contains the soft-deleted entry
+	if len(result.Skipped) != 1 {
+		t.Errorf("Expected 1 skipped, got %d", len(result.Skipped))
+	}
+	if result.Skipped[0].LoreID != loreID {
+		t.Errorf("Skipped LoreID = %q, want %q", result.Skipped[0].LoreID, loreID)
+	}
+	if result.Skipped[0].Reason != "not_found" {
+		t.Errorf("Skipped Reason = %q, want %q", result.Skipped[0].Reason, "not_found")
+	}
+}
+
+func TestRecordFeedback_PartialSuccess_SomeMissing(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create one entry
+	entries := []types.NewLoreEntry{
+		{Content: "Existing lore", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	existingID := delta.Lore[0].ID
+	nonExistentID := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+	// Submit feedback for both existing and non-existent entries
+	feedback := []types.FeedbackEntry{
+		{LoreID: existingID, Type: "helpful", SourceID: "client-1"},
+		{LoreID: nonExistentID, Type: "helpful", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatalf("Expected no error for partial success, got: %v", err)
+	}
+
+	// Verify updates contain only the existing entry
+	if len(result.Updates) != 1 {
+		t.Errorf("Expected 1 update, got %d", len(result.Updates))
+	}
+	if result.Updates[0].LoreID != existingID {
+		t.Errorf("Update LoreID = %q, want %q", result.Updates[0].LoreID, existingID)
+	}
+
+	// Verify skipped contains the non-existent entry
+	if len(result.Skipped) != 1 {
+		t.Errorf("Expected 1 skipped, got %d", len(result.Skipped))
+	}
+	if result.Skipped[0].LoreID != nonExistentID {
+		t.Errorf("Skipped LoreID = %q, want %q", result.Skipped[0].LoreID, nonExistentID)
+	}
+	if result.Skipped[0].Reason != "not_found" {
+		t.Errorf("Skipped Reason = %q, want %q", result.Skipped[0].Reason, "not_found")
+	}
+
+	// Verify the existing entry was actually updated
+	entry, _ := db.GetLore(context.Background(), existingID)
+	expectedConfidence := 0.58 // 0.5 + 0.08
+	if math.Abs(entry.Confidence-expectedConfidence) > 0.001 {
+		t.Errorf("DB Confidence = %v, want %v", entry.Confidence, expectedConfidence)
+	}
+}
+
+func TestRecordFeedback_PartialSuccess_AllMissing(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No entries exist - submit feedback for non-existent entries
+	feedback := []types.FeedbackEntry{
+		{LoreID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: "helpful", SourceID: "client-1"},
+		{LoreID: "01ARZ3NDEKTSV4RRFFQ69G5FAW", Type: "incorrect", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatalf("Expected no error for all-missing partial success, got: %v", err)
+	}
+
+	// Verify updates is empty
+	if len(result.Updates) != 0 {
+		t.Errorf("Expected 0 updates, got %d", len(result.Updates))
+	}
+
+	// Verify skipped contains both entries
+	if len(result.Skipped) != 2 {
+		t.Errorf("Expected 2 skipped, got %d", len(result.Skipped))
+	}
+	for _, skipped := range result.Skipped {
+		if skipped.Reason != "not_found" {
+			t.Errorf("Skipped Reason = %q, want %q", skipped.Reason, "not_found")
+		}
+	}
+}
+
+func TestRecordFeedback_PartialSuccess_DeletedSkipped(t *testing.T) {
+	db, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create two entries
+	entries := []types.NewLoreEntry{
+		{Content: "Active lore", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+		{Content: "To be deleted", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "test-src"},
+	}
+	_, err = db.IngestLore(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := db.GetDelta(context.Background(), time.Time{})
+	activeID := delta.Lore[0].ID
+	deletedID := delta.Lore[1].ID
+
+	// Soft delete one entry
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = db.db.Exec("UPDATE lore_entries SET deleted_at = ? WHERE id = ?", now, deletedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Submit feedback for both
+	feedback := []types.FeedbackEntry{
+		{LoreID: activeID, Type: "helpful", SourceID: "client-1"},
+		{LoreID: deletedID, Type: "helpful", SourceID: "client-1"},
+	}
+	result, err := db.RecordFeedback(context.Background(), feedback)
+	if err != nil {
+		t.Fatalf("Expected no error for partial success with deleted entry, got: %v", err)
+	}
+
+	// Verify updates contain only the active entry
+	if len(result.Updates) != 1 {
+		t.Errorf("Expected 1 update, got %d", len(result.Updates))
+	}
+	if result.Updates[0].LoreID != activeID {
+		t.Errorf("Update LoreID = %q, want %q", result.Updates[0].LoreID, activeID)
+	}
+
+	// Verify skipped contains the deleted entry
+	if len(result.Skipped) != 1 {
+		t.Errorf("Expected 1 skipped, got %d", len(result.Skipped))
+	}
+	if result.Skipped[0].LoreID != deletedID {
+		t.Errorf("Skipped LoreID = %q, want %q", result.Skipped[0].LoreID, deletedID)
+	}
+	if result.Skipped[0].Reason != "not_found" {
+		t.Errorf("Skipped Reason = %q, want %q", result.Skipped[0].Reason, "not_found")
 	}
 }
 
