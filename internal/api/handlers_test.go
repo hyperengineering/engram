@@ -162,6 +162,15 @@ func (m *mockStore) GetSyncMeta(ctx context.Context, key string) (string, error)
 func (m *mockStore) SetSyncMeta(ctx context.Context, key, value string) error {
 	return nil
 }
+func (m *mockStore) UpsertRow(ctx context.Context, tableName string, entityID string, payload []byte) error {
+	return nil
+}
+func (m *mockStore) DeleteRow(ctx context.Context, tableName string, entityID string) error {
+	return nil
+}
+func (m *mockStore) QueueEmbedding(ctx context.Context, entryID string) error {
+	return nil
+}
 func (m *mockStore) Close() error {
 	return nil
 }

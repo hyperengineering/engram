@@ -46,5 +46,10 @@ type Store interface {
 	GetSyncMeta(ctx context.Context, key string) (string, error)
 	SetSyncMeta(ctx context.Context, key, value string) error
 
+	// Replay operations (used by domain plugins during sync replay)
+	UpsertRow(ctx context.Context, tableName string, entityID string, payload []byte) error
+	DeleteRow(ctx context.Context, tableName string, entityID string) error
+	QueueEmbedding(ctx context.Context, entryID string) error
+
 	Close() error
 }
