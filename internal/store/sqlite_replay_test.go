@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"testing"
+
+	engramsync "github.com/hyperengineering/engram/internal/sync"
 )
 
 func newReplayTestStore(t *testing.T) *SQLiteStore {
@@ -402,4 +404,253 @@ func TestSQLiteStore_ImplementsReplayStore(t *testing.T) {
 	_ = s.UpsertRow
 	_ = s.DeleteRow
 	_ = s.QueueEmbedding
+}
+
+// --- Transaction-scoped replay function tests ---
+
+func TestBeginTx(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	defer tx.Rollback()
+
+	// Verify tx is usable
+	_, err = tx.ExecContext(ctx, "SELECT 1")
+	if err != nil {
+		t.Fatalf("transaction should be usable: %v", err)
+	}
+}
+
+func TestUpsertRowTx_NewEntry(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	payload := makeLorePayload(t, nil)
+	err = UpsertRowTx(ctx, tx, "lore_entries", "entry-1", payload)
+	if err != nil {
+		t.Fatalf("UpsertRowTx() error = %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	// Verify entry exists
+	entry, err := s.GetLore(ctx, "entry-1")
+	if err != nil {
+		t.Fatalf("GetLore() error = %v", err)
+	}
+	if entry.Content != "Test lore content" {
+		t.Errorf("Content = %q, want %q", entry.Content, "Test lore content")
+	}
+}
+
+func TestUpsertRowTx_Rollback(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	payload := makeLorePayload(t, nil)
+	if err := UpsertRowTx(ctx, tx, "lore_entries", "entry-1", payload); err != nil {
+		t.Fatalf("UpsertRowTx() error = %v", err)
+	}
+
+	// Rollback instead of commit
+	tx.Rollback()
+
+	// Entry should NOT exist
+	_, err = s.GetLore(ctx, "entry-1")
+	if err == nil {
+		t.Error("expected error — entry should not exist after rollback")
+	}
+}
+
+func TestUpsertRowTx_UnsupportedTable(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	defer tx.Rollback()
+
+	err = UpsertRowTx(ctx, tx, "other_table", "entry-1", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error for unsupported table")
+	}
+}
+
+func TestDeleteRowTx_SoftDeletes(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Insert via non-tx first
+	payload := makeLorePayload(t, nil)
+	if err := s.UpsertRow(ctx, "lore_entries", "entry-1", payload); err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	// Delete via tx
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	if err := DeleteRowTx(ctx, tx, "lore_entries", "entry-1"); err != nil {
+		t.Fatalf("DeleteRowTx() error = %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	// Entry should be soft-deleted
+	_, err = s.GetLore(ctx, "entry-1")
+	if err == nil {
+		t.Error("expected error for soft-deleted entry")
+	}
+
+	// Verify in DB
+	var deletedAt sql.NullString
+	err = s.db.QueryRowContext(ctx, `SELECT deleted_at FROM lore_entries WHERE id = ?`, "entry-1").Scan(&deletedAt)
+	if err != nil {
+		t.Fatalf("query deleted entry: %v", err)
+	}
+	if !deletedAt.Valid {
+		t.Error("deleted_at should be set")
+	}
+}
+
+func TestDeleteRowTx_UnsupportedTable(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	defer tx.Rollback()
+
+	err = DeleteRowTx(ctx, tx, "other_table", "entry-1")
+	if err == nil {
+		t.Fatal("expected error for unsupported table")
+	}
+}
+
+func TestQueueEmbeddingTx(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Insert entry with failed embedding_status (no embedding)
+	payload := makeLorePayload(t, map[string]interface{}{
+		"embedding_status": "failed",
+	})
+	if err := s.UpsertRow(ctx, "lore_entries", "entry-1", payload); err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	if err := QueueEmbeddingTx(ctx, tx, "entry-1"); err != nil {
+		t.Fatalf("QueueEmbeddingTx() error = %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	entry, err := s.GetLore(ctx, "entry-1")
+	if err != nil {
+		t.Fatalf("GetLore() error = %v", err)
+	}
+	if entry.EmbeddingStatus != "pending" {
+		t.Errorf("EmbeddingStatus = %q, want %q", entry.EmbeddingStatus, "pending")
+	}
+}
+
+func TestAppendChangeLogBatchTx(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	entries := []engramsync.ChangeLogEntry{
+		{TableName: "lore_entries", EntityID: "e1", Operation: "upsert", SourceID: "src-1", Payload: json.RawMessage(`{"id":"e1"}`)},
+		{TableName: "lore_entries", EntityID: "e2", Operation: "upsert", SourceID: "src-1", Payload: json.RawMessage(`{"id":"e2"}`)},
+	}
+
+	maxSeq, err := s.AppendChangeLogBatchTx(ctx, tx, entries)
+	if err != nil {
+		t.Fatalf("AppendChangeLogBatchTx() error = %v", err)
+	}
+	if maxSeq <= 0 {
+		t.Errorf("expected maxSeq > 0, got %d", maxSeq)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	// Verify entries in change log
+	result, err := s.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter() error = %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 change log entries, got %d", len(result))
+	}
+	if result[1].Sequence != maxSeq {
+		t.Errorf("last entry sequence=%d, want %d", result[1].Sequence, maxSeq)
+	}
+}
+
+func TestAppendChangeLogBatchTx_Rollback(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	entries := []engramsync.ChangeLogEntry{
+		{TableName: "lore_entries", EntityID: "e1", Operation: "upsert", SourceID: "src-1", Payload: json.RawMessage(`{"id":"e1"}`)},
+	}
+
+	_, err = s.AppendChangeLogBatchTx(ctx, tx, entries)
+	if err != nil {
+		t.Fatalf("AppendChangeLogBatchTx() error = %v", err)
+	}
+
+	// Rollback
+	tx.Rollback()
+
+	// Nothing should be in the change log
+	result, err := s.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter() error = %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 change log entries after rollback, got %d", len(result))
+	}
 }

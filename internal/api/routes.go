@@ -54,6 +54,13 @@ func NewRouter(h *Handler, mgr StoreGetter) *chi.Mux {
 					r.Post("/feedback", h.Feedback)
 					r.With(deleteRateLimiter.Middleware).Delete("/{id}", h.DeleteLore)
 				})
+
+				// Store-scoped sync routes (Story 8.5)
+				r.Route("/stores/{store_id}/sync", func(r chi.Router) {
+					r.Use(StoreContextMiddleware(mgr))
+
+					r.Post("/push", h.SyncPush)
+				})
 			}
 
 			// Backward-compatible lore routes (default store)
