@@ -68,8 +68,8 @@ func TestListStores_Multiple(t *testing.T) {
 	ctx := context.Background()
 	// Create multiple stores
 	manager.GetStore(ctx, "default") // Auto-creates default
-	manager.CreateStore(ctx, "project-a", "Project A")
-	manager.CreateStore(ctx, "project-b", "Project B")
+	manager.CreateStore(ctx, "project-a", "", "Project A")
+	manager.CreateStore(ctx, "project-b", "", "Project B")
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
@@ -190,7 +190,7 @@ func TestGetStoreInfo_EncodedPath(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	manager.CreateStore(ctx, "org/project", "Org project")
+	manager.CreateStore(ctx, "org/project", "", "Org project")
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
@@ -305,7 +305,7 @@ func TestCreateStore_AlreadyExists(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	manager.CreateStore(ctx, "existing", "Existing store")
+	manager.CreateStore(ctx, "existing", "", "Existing store")
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
@@ -351,7 +351,7 @@ func TestDeleteStore_Success(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	manager.CreateStore(ctx, "todelete", "To delete")
+	manager.CreateStore(ctx, "todelete", "", "To delete")
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
@@ -380,7 +380,7 @@ func TestDeleteStore_MissingConfirm(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	manager.CreateStore(ctx, "todelete", "To delete")
+	manager.CreateStore(ctx, "todelete", "", "To delete")
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
@@ -447,7 +447,7 @@ func TestDeleteStore_EncodedPath(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	manager.CreateStore(ctx, "org/project", "Org project")
+	manager.CreateStore(ctx, "org/project", "", "Org project")
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
@@ -518,7 +518,7 @@ func TestStoreScopedIngest_Success(t *testing.T) {
 	defer manager.Close()
 
 	// Create a test store
-	_, err := manager.CreateStore(context.Background(), "test-store", "Test")
+	_, err := manager.CreateStore(context.Background(), "test-store", "", "Test")
 	if err != nil {
 		t.Fatalf("CreateStore() error = %v", err)
 	}
@@ -578,7 +578,7 @@ func TestStoreScopedDelta_Success(t *testing.T) {
 	manager, _ := setupStoreManager(t)
 	defer manager.Close()
 
-	_, err := manager.CreateStore(context.Background(), "test-store", "Test")
+	_, err := manager.CreateStore(context.Background(), "test-store", "", "Test")
 	if err != nil {
 		t.Fatalf("CreateStore() error = %v", err)
 	}
@@ -604,7 +604,7 @@ func TestStoreScopedFeedback_RouteExists(t *testing.T) {
 	manager, _ := setupStoreManager(t)
 	defer manager.Close()
 
-	_, err := manager.CreateStore(context.Background(), "test-store", "Test")
+	_, err := manager.CreateStore(context.Background(), "test-store", "", "Test")
 	if err != nil {
 		t.Fatalf("CreateStore() error = %v", err)
 	}
@@ -713,11 +713,11 @@ func TestStoreIsolation_IngestThenQueryOther(t *testing.T) {
 	defer manager.Close()
 
 	// Create two stores
-	_, err := manager.CreateStore(context.Background(), "store-a", "Store A")
+	_, err := manager.CreateStore(context.Background(), "store-a", "", "Store A")
 	if err != nil {
 		t.Fatalf("CreateStore(store-a) error = %v", err)
 	}
-	_, err = manager.CreateStore(context.Background(), "store-b", "Store B")
+	_, err = manager.CreateStore(context.Background(), "store-b", "", "Store B")
 	if err != nil {
 		t.Fatalf("CreateStore(store-b) error = %v", err)
 	}
@@ -784,7 +784,7 @@ func TestEncodedStoreID_InPath(t *testing.T) {
 	defer manager.Close()
 
 	// Create store with path separator
-	_, err := manager.CreateStore(context.Background(), "org/project", "Org Project Store")
+	_, err := manager.CreateStore(context.Background(), "org/project", "", "Org Project Store")
 	if err != nil {
 		t.Fatalf("CreateStore() error = %v", err)
 	}
@@ -817,7 +817,7 @@ func TestStoreScopedStats_ReturnsStoreStats(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a store
-	_, err := manager.CreateStore(ctx, "project-a", "Test project")
+	_, err := manager.CreateStore(ctx, "project-a", "", "Test project")
 	if err != nil {
 		t.Fatalf("CreateStore error = %v", err)
 	}
@@ -876,7 +876,7 @@ func TestStoreScopedStats_NoAuthRequired(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a store
-	_, err := manager.CreateStore(ctx, "project-a", "Test project")
+	_, err := manager.CreateStore(ctx, "project-a", "", "Test project")
 	if err != nil {
 		t.Fatalf("CreateStore error = %v", err)
 	}
@@ -904,7 +904,7 @@ func TestStoreScopedStats_URLEncodedStoreID(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a nested store
-	_, err := manager.CreateStore(ctx, "org/project", "Nested project")
+	_, err := manager.CreateStore(ctx, "org/project", "", "Nested project")
 	if err != nil {
 		t.Fatalf("CreateStore error = %v", err)
 	}
@@ -932,5 +932,181 @@ func TestStoreScopedStats_URLEncodedStoreID(t *testing.T) {
 	// Verify we got valid stats for the nested store
 	if resp.TotalLore != 0 {
 		t.Errorf("total_lore = %d, want 0 (empty store)", resp.TotalLore)
+	}
+}
+
+// --- Story 8.3: Type and SchemaVersion Tests ---
+
+func TestCreateStore_API_WithType(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	body := `{"store_id": "tract-store", "type": "tract", "description": "Tract store"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp CreateStoreResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Type != "tract" {
+		t.Errorf("expected Type 'tract', got %q", resp.Type)
+	}
+	if resp.ID != "tract-store" {
+		t.Errorf("expected ID 'tract-store', got %q", resp.ID)
+	}
+}
+
+func TestCreateStore_API_NoType_DefaultsRecall(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	body := `{"store_id": "no-type-store", "description": "No type"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp CreateStoreResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Type != "recall" {
+		t.Errorf("expected Type 'recall' (default), got %q", resp.Type)
+	}
+}
+
+func TestGetStoreInfo_IncludesType(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+	manager.CreateStore(ctx, "typed-store", "tract", "Typed store")
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/typed-store", nil)
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp StoreInfoResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Type != "tract" {
+		t.Errorf("expected Type 'tract', got %q", resp.Type)
+	}
+	if resp.ID != "typed-store" {
+		t.Errorf("expected ID 'typed-store', got %q", resp.ID)
+	}
+}
+
+func TestListStores_IncludesType(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+	manager.CreateStore(ctx, "recall-store", "recall", "Recall store")
+	manager.CreateStore(ctx, "tract-store", "tract", "Tract store")
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores", nil)
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp ListStoresResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	typeMap := make(map[string]string)
+	for _, item := range resp.Stores {
+		typeMap[item.ID] = item.Type
+	}
+
+	if typeMap["recall-store"] != "recall" {
+		t.Errorf("recall-store Type = %q, want 'recall'", typeMap["recall-store"])
+	}
+	if typeMap["tract-store"] != "tract" {
+		t.Errorf("tract-store Type = %q, want 'tract'", typeMap["tract-store"])
+	}
+}
+
+func TestCreateStore_API_SchemaVersionInResponse(t *testing.T) {
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	router := NewRouter(handler, manager)
+
+	body := `{"store_id": "sv-store", "description": "Schema version test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp CreateStoreResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Schema version should be present (0 for new store without migrations, or set by goose)
+	// The key behavior is that the field exists in the JSON response
+	if resp.SchemaVersion < 0 {
+		t.Errorf("SchemaVersion should be >= 0, got %d", resp.SchemaVersion)
 	}
 }

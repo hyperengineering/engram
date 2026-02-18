@@ -202,7 +202,7 @@ func TestStoreManager_CreateStore_Success(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	managed, err := manager.CreateStore(ctx, "myproject", "My project store")
+	managed, err := manager.CreateStore(ctx, "myproject", "", "My project store")
 	if err != nil {
 		t.Fatalf("CreateStore() error = %v", err)
 	}
@@ -235,7 +235,7 @@ func TestStoreManager_CreateStore_NestedPath(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	managed, err := manager.CreateStore(ctx, "org/project", "Org project store")
+	managed, err := manager.CreateStore(ctx, "org/project", "", "Org project store")
 	if err != nil {
 		t.Fatalf("CreateStore('org/project') error = %v", err)
 	}
@@ -264,13 +264,13 @@ func TestStoreManager_CreateStore_AlreadyExists(t *testing.T) {
 	ctx := context.Background()
 
 	// Create first time
-	_, err = manager.CreateStore(ctx, "myproject", "First")
+	_, err = manager.CreateStore(ctx, "myproject", "", "First")
 	if err != nil {
 		t.Fatalf("CreateStore() first call error = %v", err)
 	}
 
 	// Try to create again
-	_, err = manager.CreateStore(ctx, "myproject", "Second")
+	_, err = manager.CreateStore(ctx, "myproject", "", "Second")
 	if !errors.Is(err, ErrStoreAlreadyExists) {
 		t.Errorf("CreateStore() second call expected ErrStoreAlreadyExists, got %v", err)
 	}
@@ -287,7 +287,7 @@ func TestStoreManager_CreateStore_InvalidID(t *testing.T) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	_, err = manager.CreateStore(ctx, "Invalid/ID", "Bad")
+	_, err = manager.CreateStore(ctx, "Invalid/ID", "", "Bad")
 	if !errors.Is(err, ErrInvalidStoreID) {
 		t.Errorf("CreateStore('Invalid/ID') expected ErrInvalidStoreID, got %v", err)
 	}
@@ -306,7 +306,7 @@ func TestStoreManager_DeleteStore_Success(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a store
-	_, err = manager.CreateStore(ctx, "todelete", "Will be deleted")
+	_, err = manager.CreateStore(ctx, "todelete", "", "Will be deleted")
 	if err != nil {
 		t.Fatalf("CreateStore() error = %v", err)
 	}
@@ -427,11 +427,11 @@ func TestStoreManager_ListStores_Multiple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStore('default') error = %v", err)
 	}
-	_, err = manager.CreateStore(ctx, "project1", "Project 1")
+	_, err = manager.CreateStore(ctx, "project1", "", "Project 1")
 	if err != nil {
 		t.Fatalf("CreateStore('project1') error = %v", err)
 	}
-	_, err = manager.CreateStore(ctx, "org/project2", "Project 2")
+	_, err = manager.CreateStore(ctx, "org/project2", "", "Project 2")
 	if err != nil {
 		t.Fatalf("CreateStore('org/project2') error = %v", err)
 	}
@@ -478,7 +478,7 @@ func TestStoreManager_Close_ClosesAllStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStore('default') error = %v", err)
 	}
-	_, err = manager.CreateStore(ctx, "project1", "Project 1")
+	_, err = manager.CreateStore(ctx, "project1", "", "Project 1")
 	if err != nil {
 		t.Fatalf("CreateStore('project1') error = %v", err)
 	}
@@ -487,6 +487,166 @@ func TestStoreManager_Close_ClosesAllStores(t *testing.T) {
 	err = manager.Close()
 	if err != nil {
 		t.Errorf("Close() error = %v", err)
+	}
+}
+
+func TestStoreManager_CreateStore_WithType(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootPath := filepath.Join(tmpDir, "stores")
+
+	manager, err := NewStoreManager(rootPath)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer manager.Close()
+
+	ctx := context.Background()
+	managed, err := manager.CreateStore(ctx, "tract-store", "tract", "Tract store")
+	if err != nil {
+		t.Fatalf("CreateStore() error = %v", err)
+	}
+
+	if managed.Type() != "tract" {
+		t.Errorf("Type() = %q, want 'tract'", managed.Type())
+	}
+	if managed.Meta.Type != "tract" {
+		t.Errorf("Meta.Type = %q, want 'tract'", managed.Meta.Type)
+	}
+
+	// Verify meta.yaml on disk has the type
+	metaPath := filepath.Join(rootPath, "tract-store", "meta.yaml")
+	loaded, err := LoadStoreMeta(metaPath)
+	if err != nil {
+		t.Fatalf("LoadStoreMeta() error = %v", err)
+	}
+	if loaded.Type != "tract" {
+		t.Errorf("Persisted Type = %q, want 'tract'", loaded.Type)
+	}
+}
+
+func TestStoreManager_CreateStore_NoType_DefaultsRecall(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootPath := filepath.Join(tmpDir, "stores")
+
+	manager, err := NewStoreManager(rootPath)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer manager.Close()
+
+	ctx := context.Background()
+	managed, err := manager.CreateStore(ctx, "no-type", "", "No type specified")
+	if err != nil {
+		t.Fatalf("CreateStore() error = %v", err)
+	}
+
+	if managed.Type() != DefaultStoreType {
+		t.Errorf("Type() = %q, want %q", managed.Type(), DefaultStoreType)
+	}
+}
+
+func TestStoreManager_CreateStore_CustomType(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootPath := filepath.Join(tmpDir, "stores")
+
+	manager, err := NewStoreManager(rootPath)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer manager.Close()
+
+	ctx := context.Background()
+	managed, err := manager.CreateStore(ctx, "custom-store", "my-custom-type", "Custom type store")
+	if err != nil {
+		t.Fatalf("CreateStore() error = %v", err)
+	}
+
+	if managed.Type() != "my-custom-type" {
+		t.Errorf("Type() = %q, want 'my-custom-type'", managed.Type())
+	}
+}
+
+func TestStoreManager_GetStore_DefaultAutoCreated_HasRecallType(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootPath := filepath.Join(tmpDir, "stores")
+
+	manager, err := NewStoreManager(rootPath)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer manager.Close()
+
+	ctx := context.Background()
+	managed, err := manager.GetStore(ctx, "default")
+	if err != nil {
+		t.Fatalf("GetStore('default') error = %v", err)
+	}
+
+	if managed.Type() != DefaultStoreType {
+		t.Errorf("auto-created default store Type() = %q, want %q", managed.Type(), DefaultStoreType)
+	}
+}
+
+func TestStoreManager_GetStore_ExistingNoType_DefaultsRecall(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootPath := filepath.Join(tmpDir, "stores")
+
+	manager, err := NewStoreManager(rootPath)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer manager.Close()
+
+	// Manually create a store directory with a pre-8.3 meta.yaml (no type field)
+	storeDir := filepath.Join(rootPath, "legacy-store")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	legacyMeta := []byte("created: 2026-01-15T10:00:00Z\nlast_accessed: 2026-02-17T12:00:00Z\ndescription: Legacy store\n")
+	if err := os.WriteFile(filepath.Join(storeDir, "meta.yaml"), legacyMeta, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	ctx := context.Background()
+	managed, err := manager.GetStore(ctx, "legacy-store")
+	if err != nil {
+		t.Fatalf("GetStore('legacy-store') error = %v", err)
+	}
+
+	if managed.Type() != DefaultStoreType {
+		t.Errorf("legacy store Type() = %q, want %q", managed.Type(), DefaultStoreType)
+	}
+}
+
+func TestStoreManager_ListStores_IncludesType(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootPath := filepath.Join(tmpDir, "stores")
+
+	manager, err := NewStoreManager(rootPath)
+	if err != nil {
+		t.Fatalf("NewStoreManager() error = %v", err)
+	}
+	defer manager.Close()
+
+	ctx := context.Background()
+	manager.CreateStore(ctx, "recall-store", "recall", "Recall store")
+	manager.CreateStore(ctx, "tract-store", "tract", "Tract store")
+
+	stores, err := manager.ListStores(ctx)
+	if err != nil {
+		t.Fatalf("ListStores() error = %v", err)
+	}
+
+	typeMap := make(map[string]string)
+	for _, s := range stores {
+		typeMap[s.ID] = s.Type
+	}
+
+	if typeMap["recall-store"] != "recall" {
+		t.Errorf("recall-store Type = %q, want 'recall'", typeMap["recall-store"])
+	}
+	if typeMap["tract-store"] != "tract" {
+		t.Errorf("tract-store Type = %q, want 'tract'", typeMap["tract-store"])
 	}
 }
 

@@ -1,6 +1,7 @@
 package multistore
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +20,7 @@ func TestNewManagedStore_Success(t *testing.T) {
 	}
 
 	// Create meta.yaml
-	meta := NewStoreMeta("Test store")
+	meta := NewStoreMeta("", "Test store")
 	metaPath := filepath.Join(storeDir, "meta.yaml")
 	if err := SaveStoreMeta(metaPath, meta); err != nil {
 		t.Fatalf("failed to save meta: %v", err)
@@ -72,7 +73,7 @@ func TestManagedStore_TouchAccessed(t *testing.T) {
 	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		t.Fatalf("failed to create store dir: %v", err)
 	}
-	meta := NewStoreMeta("Test store")
+	meta := NewStoreMeta("", "Test store")
 	originalAccessed := meta.LastAccessed
 	if err := SaveStoreMeta(filepath.Join(storeDir, "meta.yaml"), meta); err != nil {
 		t.Fatalf("failed to save meta: %v", err)
@@ -104,7 +105,7 @@ func TestManagedStore_FlushMeta(t *testing.T) {
 	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		t.Fatalf("failed to create store dir: %v", err)
 	}
-	meta := NewStoreMeta("Initial description")
+	meta := NewStoreMeta("", "Initial description")
 	if err := SaveStoreMeta(metaPath, meta); err != nil {
 		t.Fatalf("failed to save meta: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestManagedStore_FlushMeta_NotDirty(t *testing.T) {
 	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		t.Fatalf("failed to create store dir: %v", err)
 	}
-	meta := NewStoreMeta("Test")
+	meta := NewStoreMeta("", "Test")
 	if err := SaveStoreMeta(metaPath, meta); err != nil {
 		t.Fatalf("failed to save meta: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestManagedStore_Close(t *testing.T) {
 	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		t.Fatalf("failed to create store dir: %v", err)
 	}
-	meta := NewStoreMeta("Test")
+	meta := NewStoreMeta("", "Test")
 	if err := SaveStoreMeta(filepath.Join(storeDir, "meta.yaml"), meta); err != nil {
 		t.Fatalf("failed to save meta: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestManagedStore_StoreImplementsInterface(t *testing.T) {
 	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		t.Fatalf("failed to create store dir: %v", err)
 	}
-	meta := NewStoreMeta("Test")
+	meta := NewStoreMeta("", "Test")
 	if err := SaveStoreMeta(filepath.Join(storeDir, "meta.yaml"), meta); err != nil {
 		t.Fatalf("failed to save meta: %v", err)
 	}
@@ -214,4 +215,109 @@ func TestManagedStore_StoreImplementsInterface(t *testing.T) {
 
 	// Verify the underlying store implements store.Store interface
 	var _ store.Store = managed.Store
+}
+
+func TestManagedStore_Type_DefaultRecall(t *testing.T) {
+	tmpDir := t.TempDir()
+	storeDir := filepath.Join(tmpDir, "test-store")
+
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("failed to create store dir: %v", err)
+	}
+	meta := NewStoreMeta("", "Test")
+	if err := SaveStoreMeta(filepath.Join(storeDir, "meta.yaml"), meta); err != nil {
+		t.Fatalf("failed to save meta: %v", err)
+	}
+
+	managed, err := NewManagedStore("test-store", storeDir)
+	if err != nil {
+		t.Fatalf("NewManagedStore() error = %v", err)
+	}
+	defer managed.Close()
+
+	if managed.Type() != DefaultStoreType {
+		t.Errorf("Type() = %q, want %q", managed.Type(), DefaultStoreType)
+	}
+}
+
+func TestManagedStore_Type_Tract(t *testing.T) {
+	tmpDir := t.TempDir()
+	storeDir := filepath.Join(tmpDir, "test-store")
+
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("failed to create store dir: %v", err)
+	}
+	meta := NewStoreMeta("tract", "Tract store")
+	if err := SaveStoreMeta(filepath.Join(storeDir, "meta.yaml"), meta); err != nil {
+		t.Fatalf("failed to save meta: %v", err)
+	}
+
+	managed, err := NewManagedStore("test-store", storeDir)
+	if err != nil {
+		t.Fatalf("NewManagedStore() error = %v", err)
+	}
+	defer managed.Close()
+
+	if managed.Type() != "tract" {
+		t.Errorf("Type() = %q, want 'tract'", managed.Type())
+	}
+}
+
+func TestManagedStore_SchemaVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	storeDir := filepath.Join(tmpDir, "test-store")
+
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("failed to create store dir: %v", err)
+	}
+	meta := NewStoreMeta("", "Test")
+	if err := SaveStoreMeta(filepath.Join(storeDir, "meta.yaml"), meta); err != nil {
+		t.Fatalf("failed to save meta: %v", err)
+	}
+
+	managed, err := NewManagedStore("test-store", storeDir)
+	if err != nil {
+		t.Fatalf("NewManagedStore() error = %v", err)
+	}
+	defer managed.Close()
+
+	ctx := context.Background()
+
+	// Set a schema_version in sync_meta
+	if err := managed.Store.SetSyncMeta(ctx, "schema_version", "2"); err != nil {
+		t.Fatalf("SetSyncMeta failed: %v", err)
+	}
+
+	version := managed.SchemaVersion(ctx)
+	if version != 2 {
+		t.Errorf("SchemaVersion() = %d, want 2", version)
+	}
+}
+
+func TestManagedStore_SchemaVersion_FromMigrations(t *testing.T) {
+	tmpDir := t.TempDir()
+	storeDir := filepath.Join(tmpDir, "test-store")
+
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("failed to create store dir: %v", err)
+	}
+	meta := NewStoreMeta("", "Test")
+	if err := SaveStoreMeta(filepath.Join(storeDir, "meta.yaml"), meta); err != nil {
+		t.Fatalf("failed to save meta: %v", err)
+	}
+
+	managed, err := NewManagedStore("test-store", storeDir)
+	if err != nil {
+		t.Fatalf("NewManagedStore() error = %v", err)
+	}
+	defer managed.Close()
+
+	ctx := context.Background()
+
+	// Fresh database gets schema_version from goose migrations
+	// Should be > 0 since migrations set it
+	version := managed.SchemaVersion(ctx)
+	if version <= 0 {
+		t.Errorf("SchemaVersion() = %d, expected > 0 from migrations", version)
+	}
 }

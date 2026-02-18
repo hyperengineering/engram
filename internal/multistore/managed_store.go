@@ -1,9 +1,11 @@
 package multistore
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -81,4 +83,20 @@ func (m *ManagedStore) Close() error {
 		slog.Warn("failed to flush store metadata", "store_id", m.ID, "error", err)
 	}
 	return m.Store.Close()
+}
+
+// Type returns the store type from metadata.
+func (m *ManagedStore) Type() string {
+	return m.Meta.Type
+}
+
+// SchemaVersion returns the schema version from the database.
+// Returns 0 if unable to read (e.g., old database without sync_meta).
+func (m *ManagedStore) SchemaVersion(ctx context.Context) int {
+	version, err := m.Store.GetSyncMeta(ctx, "schema_version")
+	if err != nil {
+		return 0
+	}
+	v, _ := strconv.Atoi(version)
+	return v
 }

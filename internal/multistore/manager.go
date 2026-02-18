@@ -79,7 +79,7 @@ func (m *StoreManager) GetStore(ctx context.Context, storeID string) (*ManagedSt
 		}
 
 		// Create default store
-		if err := m.createStoreDir(storeID, "Default store (auto-created)"); err != nil {
+		if err := m.createStoreDir(storeID, DefaultStoreType, "Default store (auto-created)"); err != nil {
 			return nil, err
 		}
 	}
@@ -102,11 +102,17 @@ func (m *StoreManager) GetStore(ctx context.Context, storeID string) (*ManagedSt
 	return managed, nil
 }
 
-// CreateStore creates a new store with the given ID.
+// CreateStore creates a new store with the given ID and type.
 // Returns ErrStoreAlreadyExists if store already exists.
-func (m *StoreManager) CreateStore(ctx context.Context, storeID, description string) (*ManagedStore, error) {
+func (m *StoreManager) CreateStore(ctx context.Context, storeID, storeType, description string) (*ManagedStore, error) {
 	if err := ValidateStoreID(storeID); err != nil {
 		return nil, err
+	}
+
+	// Default type early so storeType is correct for logging below.
+	// NewStoreMeta also defaults, but we normalize here for the CreateStore caller.
+	if storeType == "" {
+		storeType = DefaultStoreType
 	}
 
 	m.mu.Lock()
@@ -120,7 +126,7 @@ func (m *StoreManager) CreateStore(ctx context.Context, storeID, description str
 	}
 
 	// Create store directory and metadata
-	if err := m.createStoreDir(storeID, description); err != nil {
+	if err := m.createStoreDir(storeID, storeType, description); err != nil {
 		return nil, err
 	}
 
@@ -136,6 +142,7 @@ func (m *StoreManager) CreateStore(ctx context.Context, storeID, description str
 		"component", "multistore",
 		"action", "store_created",
 		"store_id", storeID,
+		"store_type", storeType,
 	)
 
 	return managed, nil
@@ -200,7 +207,7 @@ func (m *StoreManager) ListStores(ctx context.Context) ([]StoreInfo, error) {
 		}
 
 		// Recursively find stores (handles nested paths like org/project)
-		stores, err := m.findStoresRecursive(entry.Name(), "")
+		stores, err := m.findStoresRecursive(ctx, entry.Name(), "")
 		if err != nil {
 			slog.Warn("error scanning store directory",
 				"path", entry.Name(), "error", err)
@@ -213,7 +220,7 @@ func (m *StoreManager) ListStores(ctx context.Context) ([]StoreInfo, error) {
 }
 
 // findStoresRecursive discovers stores in nested directories.
-func (m *StoreManager) findStoresRecursive(currentPath, prefix string) ([]StoreInfo, error) {
+func (m *StoreManager) findStoresRecursive(ctx context.Context, currentPath, prefix string) ([]StoreInfo, error) {
 	fullPath := filepath.Join(m.rootPath, currentPath)
 	if prefix != "" {
 		fullPath = filepath.Join(m.rootPath, prefix, currentPath)
@@ -227,7 +234,7 @@ func (m *StoreManager) findStoresRecursive(currentPath, prefix string) ([]StoreI
 			storeID = prefix + "/" + currentPath
 		}
 
-		info, err := m.getStoreInfo(storeID, fullPath)
+		info, err := m.getStoreInfo(ctx, storeID, fullPath)
 		if err != nil {
 			return nil, err
 		}
@@ -251,7 +258,7 @@ func (m *StoreManager) findStoresRecursive(currentPath, prefix string) ([]StoreI
 			newPrefix = prefix + "/" + currentPath
 		}
 
-		stores, err := m.findStoresRecursive(entry.Name(), newPrefix)
+		stores, err := m.findStoresRecursive(ctx, entry.Name(), newPrefix)
 		if err != nil {
 			continue // Skip problematic directories
 		}
@@ -262,7 +269,7 @@ func (m *StoreManager) findStoresRecursive(currentPath, prefix string) ([]StoreI
 }
 
 // getStoreInfo collects information about a single store.
-func (m *StoreManager) getStoreInfo(storeID, basePath string) (StoreInfo, error) {
+func (m *StoreManager) getStoreInfo(ctx context.Context, storeID, basePath string) (StoreInfo, error) {
 	metaPath := filepath.Join(basePath, "meta.yaml")
 	meta, err := LoadStoreMeta(metaPath)
 	if err != nil {
@@ -276,12 +283,22 @@ func (m *StoreManager) getStoreInfo(storeID, basePath string) (StoreInfo, error)
 		sizeBytes = info.Size()
 	}
 
+	// Get schema version from the in-memory store if loaded.
+	// Returns 0 for stores not currently loaded -- this is intentional to avoid
+	// lazy-loading every store during ListStores, which would be expensive.
+	schemaVersion := 0
+	if managed, ok := m.stores[storeID]; ok {
+		schemaVersion = managed.SchemaVersion(ctx)
+	}
+
 	return StoreInfo{
-		ID:           storeID,
-		Created:      meta.Created,
-		LastAccessed: meta.LastAccessed,
-		Description:  meta.Description,
-		SizeBytes:    sizeBytes,
+		ID:            storeID,
+		Type:          meta.Type,
+		SchemaVersion: schemaVersion,
+		Created:       meta.Created,
+		LastAccessed:  meta.LastAccessed,
+		Description:   meta.Description,
+		SizeBytes:     sizeBytes,
 	}, nil
 }
 
@@ -292,14 +309,14 @@ func (m *StoreManager) storePath(storeID string) string {
 }
 
 // createStoreDir creates a new store directory with metadata.
-func (m *StoreManager) createStoreDir(storeID, description string) error {
+func (m *StoreManager) createStoreDir(storeID, storeType, description string) error {
 	storePath := m.storePath(storeID)
 
 	if err := os.MkdirAll(storePath, 0755); err != nil {
 		return fmt.Errorf("create store directory: %w", err)
 	}
 
-	meta := NewStoreMeta(description)
+	meta := NewStoreMeta(storeType, description)
 	metaPath := filepath.Join(storePath, "meta.yaml")
 
 	if err := SaveStoreMeta(metaPath, meta); err != nil {

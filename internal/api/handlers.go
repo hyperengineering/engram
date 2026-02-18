@@ -405,34 +405,41 @@ type ListStoresResponse struct {
 
 // StoreListItem represents a store in the list response.
 type StoreListItem struct {
-	ID           string    `json:"id"`
-	RecordCount  int64     `json:"record_count"`
-	LastAccessed time.Time `json:"last_accessed"`
-	SizeBytes    int64     `json:"size_bytes"`
-	Description  string    `json:"description,omitempty"`
+	ID            string    `json:"id"`
+	Type          string    `json:"type"`
+	SchemaVersion int       `json:"schema_version"`
+	RecordCount   int64     `json:"record_count"`
+	LastAccessed  time.Time `json:"last_accessed"`
+	SizeBytes     int64     `json:"size_bytes"`
+	Description   string    `json:"description,omitempty"`
 }
 
 // StoreInfoResponse is the response for GET /api/v1/stores/{store_id}.
 type StoreInfoResponse struct {
-	ID           string               `json:"id"`
-	Created      time.Time            `json:"created"`
-	LastAccessed time.Time            `json:"last_accessed"`
-	Description  string               `json:"description,omitempty"`
-	SizeBytes    int64                `json:"size_bytes"`
-	Stats        *types.ExtendedStats `json:"stats"`
+	ID            string               `json:"id"`
+	Type          string               `json:"type"`
+	SchemaVersion int                  `json:"schema_version"`
+	Created       time.Time            `json:"created"`
+	LastAccessed  time.Time            `json:"last_accessed"`
+	Description   string               `json:"description,omitempty"`
+	SizeBytes     int64                `json:"size_bytes"`
+	Stats         *types.ExtendedStats `json:"stats"`
 }
 
 // CreateStoreRequest is the request body for POST /api/v1/stores.
 type CreateStoreRequest struct {
 	StoreID     string `json:"store_id"`
+	Type        string `json:"type,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 
 // CreateStoreResponse is the response for POST /api/v1/stores.
 type CreateStoreResponse struct {
-	ID          string    `json:"id"`
-	Created     time.Time `json:"created"`
-	Description string    `json:"description,omitempty"`
+	ID            string    `json:"id"`
+	Type          string    `json:"type"`
+	SchemaVersion int       `json:"schema_version"`
+	Created       time.Time `json:"created"`
+	Description   string    `json:"description,omitempty"`
 }
 
 // Feedback handles POST /api/v1/lore/feedback and POST /api/v1/stores/{store_id}/lore/feedback
@@ -590,10 +597,12 @@ func (h *Handler) ListStores(w http.ResponseWriter, r *http.Request) {
 	items := make([]StoreListItem, 0, len(storeInfos))
 	for _, info := range storeInfos {
 		item := StoreListItem{
-			ID:           info.ID,
-			LastAccessed: info.LastAccessed,
-			SizeBytes:    info.SizeBytes,
-			Description:  info.Description,
+			ID:            info.ID,
+			Type:          info.Type,
+			SchemaVersion: info.SchemaVersion,
+			LastAccessed:  info.LastAccessed,
+			SizeBytes:     info.SizeBytes,
+			Description:   info.Description,
 		}
 
 		// Get record count from store (if loaded or loadable)
@@ -679,12 +688,14 @@ func (h *Handler) GetStoreInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := StoreInfoResponse{
-		ID:           decodedID,
-		Created:      managed.Meta.Created,
-		LastAccessed: managed.Meta.LastAccessed,
-		Description:  managed.Meta.Description,
-		SizeBytes:    sizeBytes,
-		Stats:        stats,
+		ID:            decodedID,
+		Type:          managed.Type(),
+		SchemaVersion: managed.SchemaVersion(ctx),
+		Created:       managed.Meta.Created,
+		LastAccessed:  managed.Meta.LastAccessed,
+		Description:   managed.Meta.Description,
+		SizeBytes:     sizeBytes,
+		Stats:         stats,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -718,8 +729,8 @@ func (h *Handler) CreateStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create store
-	managed, err := h.storeManager.CreateStore(ctx, req.StoreID, req.Description)
+	// Create store with type
+	managed, err := h.storeManager.CreateStore(ctx, req.StoreID, req.Type, req.Description)
 	if err != nil {
 		if errors.Is(err, multistore.ErrStoreAlreadyExists) {
 			WriteProblemConflict(w, r, fmt.Sprintf("Store already exists: %s", req.StoreID))
@@ -735,9 +746,11 @@ func (h *Handler) CreateStore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := CreateStoreResponse{
-		ID:          managed.ID,
-		Created:     managed.Meta.Created,
-		Description: managed.Meta.Description,
+		ID:            managed.ID,
+		Type:          managed.Type(),
+		SchemaVersion: managed.SchemaVersion(ctx),
+		Created:       managed.Meta.Created,
+		Description:   managed.Meta.Description,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -748,6 +761,7 @@ func (h *Handler) CreateStore(w http.ResponseWriter, r *http.Request) {
 		"component", "api",
 		"action", "create_store",
 		"store_id", req.StoreID,
+		"store_type", managed.Type(),
 		"request_id", GetRequestID(ctx),
 		"remote_addr", r.RemoteAddr,
 	)

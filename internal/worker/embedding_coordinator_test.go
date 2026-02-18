@@ -621,7 +621,7 @@ func TestEmbeddingStoreManagerAdapter_Integration_ListStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStore('default') error = %v", err)
 	}
-	_, err = manager.CreateStore(ctx, "project-a", "Project A")
+	_, err = manager.CreateStore(ctx, "project-a", "", "Project A")
 	if err != nil {
 		t.Fatalf("CreateStore('project-a') error = %v", err)
 	}
@@ -727,7 +727,7 @@ func TestEmbeddingStoreManagerAdapter_Integration_EmbeddingOperations(t *testing
 		if id == "default" {
 			_, err = manager.GetStore(ctx, id)
 		} else {
-			_, err = manager.CreateStore(ctx, id, "Test store: "+id)
+			_, err = manager.CreateStore(ctx, id, "", "Test store: "+id)
 		}
 		if err != nil {
 			t.Fatalf("create store %q error = %v", id, err)

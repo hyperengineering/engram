@@ -437,7 +437,7 @@ func TestHealth_WithStoreParameter(t *testing.T) {
 	defer mgr.Close()
 
 	// Create test store
-	_, err = mgr.CreateStore(context.Background(), "test-store", "Test store")
+	_, err = mgr.CreateStore(context.Background(), "test-store", "", "Test store")
 	if err != nil {
 		t.Fatalf("CreateStore() error = %v", err)
 	}

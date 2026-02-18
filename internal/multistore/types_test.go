@@ -9,7 +9,7 @@ import (
 
 func TestNewStoreMeta(t *testing.T) {
 	before := time.Now().UTC()
-	meta := NewStoreMeta("Test store description")
+	meta := NewStoreMeta("", "Test store description")
 	after := time.Now().UTC()
 
 	if meta.Description != "Test store description" {
@@ -94,7 +94,7 @@ func TestStoreMeta_EmptyDescription(t *testing.T) {
 	tmpDir := t.TempDir()
 	metaPath := filepath.Join(tmpDir, "meta.yaml")
 
-	original := NewStoreMeta("")
+	original := NewStoreMeta("", "")
 
 	if err := SaveStoreMeta(metaPath, original); err != nil {
 		t.Fatalf("SaveStoreMeta failed: %v", err)
@@ -113,11 +113,13 @@ func TestStoreMeta_EmptyDescription(t *testing.T) {
 func TestStoreInfo_Fields(t *testing.T) {
 	now := time.Now().UTC()
 	info := StoreInfo{
-		ID:           "test/store",
-		Created:      now,
-		LastAccessed: now,
-		Description:  "Test store",
-		SizeBytes:    1024,
+		ID:            "test/store",
+		Type:          "tract",
+		SchemaVersion: 3,
+		Created:       now,
+		LastAccessed:  now,
+		Description:   "Test store",
+		SizeBytes:     1024,
 	}
 
 	if info.ID != "test/store" {
@@ -125,5 +127,109 @@ func TestStoreInfo_Fields(t *testing.T) {
 	}
 	if info.SizeBytes != 1024 {
 		t.Errorf("expected SizeBytes 1024, got %d", info.SizeBytes)
+	}
+	if info.Type != "tract" {
+		t.Errorf("expected Type 'tract', got %q", info.Type)
+	}
+	if info.SchemaVersion != 3 {
+		t.Errorf("expected SchemaVersion 3, got %d", info.SchemaVersion)
+	}
+}
+
+func TestNewStoreMeta_WithType(t *testing.T) {
+	meta := NewStoreMeta("tract", "Test tract store")
+
+	if meta.Type != "tract" {
+		t.Errorf("expected Type 'tract', got %q", meta.Type)
+	}
+	if meta.Description != "Test tract store" {
+		t.Errorf("expected description 'Test tract store', got %q", meta.Description)
+	}
+}
+
+func TestNewStoreMeta_EmptyType(t *testing.T) {
+	meta := NewStoreMeta("", "desc")
+
+	if meta.Type != DefaultStoreType {
+		t.Errorf("expected Type %q (default), got %q", DefaultStoreType, meta.Type)
+	}
+}
+
+func TestNewStoreMeta_CustomType(t *testing.T) {
+	meta := NewStoreMeta("custom-tool", "Custom store")
+
+	if meta.Type != "custom-tool" {
+		t.Errorf("expected Type 'custom-tool', got %q", meta.Type)
+	}
+}
+
+func TestLoadStoreMeta_WithType(t *testing.T) {
+	tmpDir := t.TempDir()
+	metaPath := filepath.Join(tmpDir, "meta.yaml")
+
+	content := []byte("type: tract\ncreated: 2026-02-17T10:00:00Z\nlast_accessed: 2026-02-17T12:00:00Z\ndescription: Tract store\n")
+	if err := os.WriteFile(metaPath, content, 0644); err != nil {
+		t.Fatalf("failed to write meta.yaml: %v", err)
+	}
+
+	meta, err := LoadStoreMeta(metaPath)
+	if err != nil {
+		t.Fatalf("LoadStoreMeta failed: %v", err)
+	}
+
+	if meta.Type != "tract" {
+		t.Errorf("expected Type 'tract', got %q", meta.Type)
+	}
+}
+
+func TestLoadStoreMeta_NoType_DefaultsToRecall(t *testing.T) {
+	tmpDir := t.TempDir()
+	metaPath := filepath.Join(tmpDir, "meta.yaml")
+
+	// Simulate a pre-8.3 meta.yaml (no type field)
+	content := []byte("created: 2026-01-15T10:00:00Z\nlast_accessed: 2026-02-17T12:00:00Z\ndescription: My store\n")
+	if err := os.WriteFile(metaPath, content, 0644); err != nil {
+		t.Fatalf("failed to write meta.yaml: %v", err)
+	}
+
+	meta, err := LoadStoreMeta(metaPath)
+	if err != nil {
+		t.Fatalf("LoadStoreMeta failed: %v", err)
+	}
+
+	if meta.Type != DefaultStoreType {
+		t.Errorf("expected Type %q (default), got %q", DefaultStoreType, meta.Type)
+	}
+}
+
+func TestStoreMeta_SaveLoadRoundTrip_WithType(t *testing.T) {
+	tmpDir := t.TempDir()
+	metaPath := filepath.Join(tmpDir, "meta.yaml")
+
+	original := NewStoreMeta("tract", "Round-trip with type")
+
+	if err := SaveStoreMeta(metaPath, original); err != nil {
+		t.Fatalf("SaveStoreMeta failed: %v", err)
+	}
+
+	loaded, err := LoadStoreMeta(metaPath)
+	if err != nil {
+		t.Fatalf("LoadStoreMeta failed: %v", err)
+	}
+
+	if loaded.Type != "tract" {
+		t.Errorf("Type mismatch: got %q, want 'tract'", loaded.Type)
+	}
+	if loaded.Description != "Round-trip with type" {
+		t.Errorf("Description mismatch: got %q, want 'Round-trip with type'", loaded.Description)
+	}
+	if !loaded.Created.Equal(original.Created) {
+		t.Errorf("Created mismatch: got %v, want %v", loaded.Created, original.Created)
+	}
+}
+
+func TestDefaultStoreType_Constant(t *testing.T) {
+	if DefaultStoreType != "recall" {
+		t.Errorf("expected DefaultStoreType 'recall', got %q", DefaultStoreType)
 	}
 }
