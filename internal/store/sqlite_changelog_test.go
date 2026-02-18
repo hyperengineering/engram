@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1048,6 +1051,519 @@ func TestMigration002_Rollback(t *testing.T) {
 	}
 	if content != "preserved content" {
 		t.Errorf("expected 'preserved content', got %q", content)
+	}
+}
+
+// --- Compaction Tests ---
+
+func TestCompactChangeLog_NoEntries(t *testing.T) {
+	// Given: An empty change_log
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	// When: Compact with any cutoff
+	exported, deleted, err := store.CompactChangeLog(ctx, time.Now(), auditDir)
+
+	// Then: Returns 0, 0, nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exported != 0 || deleted != 0 {
+		t.Errorf("expected (0, 0), got (%d, %d)", exported, deleted)
+	}
+}
+
+func TestCompactChangeLog_AllRecent(t *testing.T) {
+	// Given: All entries are newer than cutoff
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		_, err := store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(`{"v":1}`),
+			SourceID:  "src-1",
+			CreatedAt: now, // Recent
+		})
+		if err != nil {
+			t.Fatalf("append failed: %v", err)
+		}
+	}
+
+	// When: Compact with cutoff in the past (all entries are newer)
+	cutoff := now.Add(-1 * time.Hour)
+	exported, deleted, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+
+	// Then: Nothing compacted
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exported != 0 || deleted != 0 {
+		t.Errorf("expected (0, 0), got (%d, %d)", exported, deleted)
+	}
+}
+
+func TestCompactChangeLog_KeepsLatest(t *testing.T) {
+	// Given: One entity with 3 versions, all old enough for compaction
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	for i := 0; i < 3; i++ {
+		_, err := store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(`{"v":` + fmt.Sprintf("%d", i) + `}`),
+			SourceID:  "src-1",
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("append failed: %v", err)
+		}
+	}
+
+	// When: Compact with cutoff that includes all entries
+	cutoff := time.Now().UTC()
+	exported, deleted, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+
+	// Then: 2 deleted (oldest two), latest kept
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exported != 2 {
+		t.Errorf("expected 2 exported, got %d", exported)
+	}
+	if deleted != 2 {
+		t.Errorf("expected 2 deleted, got %d", deleted)
+	}
+
+	// And: Only 1 entry remains in change_log (the latest)
+	entries, err := store.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 remaining entry, got %d", len(entries))
+	}
+	if entries[0].Sequence != 3 {
+		t.Errorf("expected sequence 3 (latest), got %d", entries[0].Sequence)
+	}
+}
+
+func TestCompactChangeLog_KeepsDeleteTombstones(t *testing.T) {
+	// Given: An entity with upserts and a delete tombstone
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+
+	// Upsert then delete
+	_, err := store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+		TableName: "lore_entries",
+		EntityID:  "entity-1",
+		Operation: engramsync.OperationUpsert,
+		Payload:   json.RawMessage(`{"v":1}`),
+		SourceID:  "src-1",
+		CreatedAt: oldTime,
+	})
+	if err != nil {
+		t.Fatalf("append upsert failed: %v", err)
+	}
+
+	_, err = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+		TableName: "lore_entries",
+		EntityID:  "entity-1",
+		Operation: engramsync.OperationDelete,
+		SourceID:  "src-1",
+		CreatedAt: oldTime.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("append delete failed: %v", err)
+	}
+
+	// When: Compact
+	cutoff := time.Now().UTC()
+	exported, deleted, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+
+	// Then: Only the upsert is deleted, delete tombstone is kept
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exported != 1 {
+		t.Errorf("expected 1 exported, got %d", exported)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", deleted)
+	}
+
+	// And: Delete tombstone remains
+	entries, err := store.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 remaining entry, got %d", len(entries))
+	}
+	if entries[0].Operation != engramsync.OperationDelete {
+		t.Errorf("expected delete tombstone to remain, got operation %q", entries[0].Operation)
+	}
+}
+
+func TestCompactChangeLog_UpdatesSyncMeta(t *testing.T) {
+	// Given: Entries that will be compacted
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	for i := 0; i < 3; i++ {
+		_, err := store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(`{"v":1}`),
+			SourceID:  "src-1",
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("append failed: %v", err)
+		}
+	}
+
+	// When: Compact
+	cutoff := time.Now().UTC()
+	_, _, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+	if err != nil {
+		t.Fatalf("compact failed: %v", err)
+	}
+
+	// Then: sync_meta is updated
+	seq, err := store.GetSyncMeta(ctx, engramsync.SyncMetaLastCompactionSeq)
+	if err != nil {
+		t.Fatalf("GetSyncMeta last_compaction_seq failed: %v", err)
+	}
+	if seq == "0" {
+		t.Error("expected last_compaction_seq to be updated from '0'")
+	}
+
+	at, err := store.GetSyncMeta(ctx, engramsync.SyncMetaLastCompactionAt)
+	if err != nil {
+		t.Fatalf("GetSyncMeta last_compaction_at failed: %v", err)
+	}
+	if at == "" {
+		t.Error("expected last_compaction_at to be set")
+	}
+}
+
+func TestCompactChangeLog_CreatesAuditDir(t *testing.T) {
+	// Given: Audit directory does not exist
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "nonexistent", "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	for i := 0; i < 2; i++ {
+		_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(`{"v":1}`),
+			SourceID:  "src-1",
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// When: Compact
+	cutoff := time.Now().UTC()
+	_, _, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+
+	// Then: No error, audit dir created
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	info, err := os.Stat(auditDir)
+	if err != nil {
+		t.Fatalf("audit dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("expected audit path to be a directory")
+	}
+}
+
+func TestCompactChangeLog_AppendsAuditFile(t *testing.T) {
+	// Given: Entries to compact
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	for i := 0; i < 3; i++ {
+		_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(fmt.Sprintf(`{"v":%d}`, i)),
+			SourceID:  "src-1",
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// When: Compact
+	cutoff := time.Now().UTC()
+	exported, _, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+	if err != nil {
+		t.Fatalf("compact failed: %v", err)
+	}
+
+	// Then: Audit file contains exported entries as JSONL
+	dateStr := time.Now().UTC().Format("2006-01-02")
+	auditFile := filepath.Join(auditDir, dateStr+".jsonl")
+
+	data, err := os.ReadFile(auditFile)
+	if err != nil {
+		t.Fatalf("failed to read audit file: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if int64(len(lines)) != exported {
+		t.Errorf("expected %d audit lines, got %d", exported, len(lines))
+	}
+
+	// Verify each line is valid JSON with expected fields
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Errorf("invalid JSON in audit line: %v", err)
+		}
+		if _, ok := entry["sequence"]; !ok {
+			t.Error("audit entry missing 'sequence' field")
+		}
+		if _, ok := entry["table_name"]; !ok {
+			t.Error("audit entry missing 'table_name' field")
+		}
+	}
+}
+
+func TestCompactChangeLog_AuditWriteError(t *testing.T) {
+	// Given: Audit directory is unwritable
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Use /dev/null/impossible — guaranteed to fail on MkdirAll
+	auditDir := "/dev/null/impossible"
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	for i := 0; i < 2; i++ {
+		_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(`{"v":1}`),
+			SourceID:  "src-1",
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// When: Compact with unwritable audit dir
+	cutoff := time.Now().UTC()
+	_, _, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+
+	// Then: Error returned
+	if err == nil {
+		t.Fatal("expected error for unwritable audit dir")
+	}
+
+	// And: No entries deleted (abort on export failure)
+	entries, _ := store.GetChangeLogAfter(ctx, 0, 100)
+	if len(entries) != 2 {
+		t.Errorf("expected all 2 entries preserved, got %d", len(entries))
+	}
+}
+
+func TestCompactChangeLog_MultipleEntities(t *testing.T) {
+	// Given: 3 entities, each with 3 versions
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	for entity := 0; entity < 3; entity++ {
+		for version := 0; version < 3; version++ {
+			_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+				TableName: "lore_entries",
+				EntityID:  fmt.Sprintf("entity-%d", entity),
+				Operation: engramsync.OperationUpsert,
+				Payload:   json.RawMessage(fmt.Sprintf(`{"v":%d}`, version)),
+				SourceID:  "src-1",
+				CreatedAt: oldTime.Add(time.Duration(version) * time.Minute),
+			})
+		}
+	}
+
+	// When: Compact
+	cutoff := time.Now().UTC()
+	exported, deleted, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+
+	// Then: 6 deleted (2 per entity), 3 kept (latest per entity)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exported != 6 {
+		t.Errorf("expected 6 exported, got %d", exported)
+	}
+	if deleted != 6 {
+		t.Errorf("expected 6 deleted, got %d", deleted)
+	}
+
+	// And: 3 entries remain
+	entries, err := store.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("expected 3 remaining entries, got %d", len(entries))
+	}
+}
+
+func TestCompactChangeLog_MixedOperations(t *testing.T) {
+	// Given: Entity with upserts and a separate entity with delete
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+
+	// Entity-1: 3 upserts
+	for i := 0; i < 3; i++ {
+		_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(fmt.Sprintf(`{"v":%d}`, i)),
+			SourceID:  "src-1",
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// Entity-2: upsert then delete
+	_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+		TableName: "lore_entries",
+		EntityID:  "entity-2",
+		Operation: engramsync.OperationUpsert,
+		Payload:   json.RawMessage(`{"v":0}`),
+		SourceID:  "src-1",
+		CreatedAt: oldTime,
+	})
+	_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+		TableName: "lore_entries",
+		EntityID:  "entity-2",
+		Operation: engramsync.OperationDelete,
+		SourceID:  "src-1",
+		CreatedAt: oldTime.Add(time.Minute),
+	})
+
+	// When: Compact
+	cutoff := time.Now().UTC()
+	exported, deleted, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+
+	// Then: Only old upserts deleted (2 from entity-1, 1 from entity-2)
+	// Delete tombstone kept, latest upsert for entity-1 kept
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exported != 3 {
+		t.Errorf("expected 3 exported, got %d", exported)
+	}
+	if deleted != 3 {
+		t.Errorf("expected 3 deleted, got %d", deleted)
+	}
+
+	// And: 2 entries remain (latest upsert for entity-1 + delete tombstone for entity-2)
+	entries, err := store.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 remaining entries, got %d", len(entries))
+	}
+}
+
+func TestCompactChangeLog_SequenceOrder(t *testing.T) {
+	// Given: Entity with entries — highest sequence should be kept
+	store := newTestStore(t)
+	ctx := context.Background()
+	auditDir := filepath.Join(t.TempDir(), "audit")
+
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+
+	// Insert entries for same entity (sequence numbers auto-increment)
+	for i := 0; i < 5; i++ {
+		_, _ = store.AppendChangeLog(ctx, &engramsync.ChangeLogEntry{
+			TableName: "lore_entries",
+			EntityID:  "entity-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   json.RawMessage(fmt.Sprintf(`{"v":%d}`, i)),
+			SourceID:  "src-1",
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// When: Compact
+	cutoff := time.Now().UTC()
+	_, _, err := store.CompactChangeLog(ctx, cutoff, auditDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Then: Only highest sequence entry remains
+	entries, err := store.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 remaining entry, got %d", len(entries))
+	}
+	if entries[0].Sequence != 5 {
+		t.Errorf("expected sequence 5 (highest), got %d", entries[0].Sequence)
+	}
+}
+
+func TestSetLastCompaction(t *testing.T) {
+	// Given: A store
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// When: SetLastCompaction is called
+	now := time.Now().UTC()
+	err := store.SetLastCompaction(ctx, 42, now)
+	if err != nil {
+		t.Fatalf("SetLastCompaction failed: %v", err)
+	}
+
+	// Then: sync_meta values are updated
+	seq, err := store.GetSyncMeta(ctx, engramsync.SyncMetaLastCompactionSeq)
+	if err != nil {
+		t.Fatalf("GetSyncMeta seq failed: %v", err)
+	}
+	if seq != "42" {
+		t.Errorf("expected last_compaction_seq '42', got %q", seq)
+	}
+
+	at, err := store.GetSyncMeta(ctx, engramsync.SyncMetaLastCompactionAt)
+	if err != nil {
+		t.Fatalf("GetSyncMeta at failed: %v", err)
+	}
+	if at == "" {
+		t.Error("expected last_compaction_at to be set")
 	}
 }
 

@@ -141,6 +141,15 @@ func run(cmd *cobra.Command, args []string) error {
 	)
 	startWorker(ctx, &wg, "decay-coordinator", decayCoordinator.Run)
 
+	// Initialize and start compaction coordinator (multi-store aware)
+	compactionAdapter := worker.NewCompactionStoreManagerAdapter(storeManager)
+	compactionCoordinator := worker.NewCompactionCoordinator(
+		compactionAdapter,
+		time.Duration(cfg.Worker.CompactionInterval),
+		time.Duration(cfg.Worker.CompactionRetention),
+	)
+	startWorker(ctx, &wg, "compaction-coordinator", compactionCoordinator.Run)
+
 	// 11. Start HTTP server in goroutine
 	go func() {
 		slog.Info("server starting", "address", addr)

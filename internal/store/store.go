@@ -46,6 +46,10 @@ type Store interface {
 	GetSyncMeta(ctx context.Context, key string) (string, error)
 	SetSyncMeta(ctx context.Context, key, value string) error
 
+	// Change log compaction
+	CompactChangeLog(ctx context.Context, cutoff time.Time, auditDir string) (exported int64, deleted int64, err error)
+	SetLastCompaction(ctx context.Context, sequence int64, timestamp time.Time) error
+
 	// Replay operations (used by domain plugins during sync replay)
 	UpsertRow(ctx context.Context, tableName string, entityID string, payload []byte) error
 	DeleteRow(ctx context.Context, tableName string, entityID string) error

@@ -98,6 +98,12 @@ func (m *mockStore) GetSyncMeta(ctx context.Context, key string) (string, error)
 func (m *mockStore) SetSyncMeta(ctx context.Context, key, value string) error {
 	return nil
 }
+func (m *mockStore) CompactChangeLog(ctx context.Context, cutoff time.Time, auditDir string) (int64, int64, error) {
+	return 0, 0, nil
+}
+func (m *mockStore) SetLastCompaction(ctx context.Context, sequence int64, timestamp time.Time) error {
+	return nil
+}
 func (m *mockStore) UpsertRow(ctx context.Context, tableName string, entityID string, payload []byte) error {
 	return nil
 }

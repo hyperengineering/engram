@@ -55,6 +55,8 @@ type WorkerConfig struct {
 	EmbeddingRetryInterval    Duration `yaml:"embedding_retry_interval"`
 	EmbeddingRetryMaxAttempts int      `yaml:"embedding_retry_max_attempts"`
 	EmbeddingRetryBatchSize   int      `yaml:"embedding_retry_batch_size"`
+	CompactionInterval        Duration `yaml:"compaction_interval"`
+	CompactionRetention       Duration `yaml:"compaction_retention"`
 }
 
 // LogConfig contains logging settings.
@@ -178,6 +180,8 @@ func newDefaults() *Config {
 			EmbeddingRetryInterval:    Duration(5 * time.Minute),
 			EmbeddingRetryMaxAttempts: 10,
 			EmbeddingRetryBatchSize:   50,
+			CompactionInterval:        Duration(24 * time.Hour),
+			CompactionRetention:       Duration(7 * 24 * time.Hour),
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -279,6 +283,16 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("ENGRAM_EMBEDDING_RETRY_BATCH_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Worker.EmbeddingRetryBatchSize = n
+		}
+	}
+	if v := os.Getenv("ENGRAM_COMPACTION_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Worker.CompactionInterval = Duration(d)
+		}
+	}
+	if v := os.Getenv("ENGRAM_COMPACTION_RETENTION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Worker.CompactionRetention = Duration(d)
 		}
 	}
 
