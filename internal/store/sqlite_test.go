@@ -3689,7 +3689,7 @@ func TestDeleteLore_Success(t *testing.T) {
 	}
 
 	// Delete the entry
-	err = db.DeleteLore(context.Background(), id)
+	err = db.DeleteLore(context.Background(), id, "test-source")
 	if err != nil {
 		t.Fatalf("DeleteLore failed: %v", err)
 	}
@@ -3713,7 +3713,7 @@ func TestDeleteLore_NotFound(t *testing.T) {
 	defer db.Close()
 
 	// Try to delete non-existent entry
-	err = db.DeleteLore(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	err = db.DeleteLore(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FAV", "test-source")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
@@ -3746,13 +3746,13 @@ func TestDeleteLore_AlreadyDeleted(t *testing.T) {
 	}
 
 	// Delete first time - should succeed
-	err = db.DeleteLore(context.Background(), id)
+	err = db.DeleteLore(context.Background(), id, "test-source")
 	if err != nil {
 		t.Fatalf("First delete failed: %v", err)
 	}
 
 	// Delete second time - should return ErrNotFound
-	err = db.DeleteLore(context.Background(), id)
+	err = db.DeleteLore(context.Background(), id, "test-source")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("second delete: expected ErrNotFound, got: %v", err)
 	}
@@ -3777,7 +3777,7 @@ func TestDeleteLore_UpdatesTimestamp(t *testing.T) {
 	}
 
 	// Delete the entry
-	err = db.DeleteLore(context.Background(), id)
+	err = db.DeleteLore(context.Background(), id, "test-source")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3833,7 +3833,7 @@ func TestDeleteLore_ExcludedFromGetLore(t *testing.T) {
 	}
 
 	// Delete the entry
-	err = db.DeleteLore(context.Background(), id)
+	err = db.DeleteLore(context.Background(), id, "test-source")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3875,7 +3875,7 @@ func TestDeleteLore_AppearsInDelta(t *testing.T) {
 	}
 
 	// Delete the entry
-	err = db.DeleteLore(context.Background(), id)
+	err = db.DeleteLore(context.Background(), id, "test-source")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3930,7 +3930,7 @@ func TestDeleteLore_RespectsCancellation(t *testing.T) {
 	cancel()
 
 	// Delete with cancelled context should fail
-	err = db.DeleteLore(ctx, id)
+	err = db.DeleteLore(ctx, id, "test-source")
 	if err == nil {
 		t.Error("expected error with cancelled context, got nil")
 	}
@@ -3982,7 +3982,7 @@ func TestDeleteLore_ConcurrentDeletes(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func() {
 			defer wg.Done()
-			results <- db.DeleteLore(context.Background(), id)
+			results <- db.DeleteLore(context.Background(), id, "test-source")
 		}()
 	}
 
@@ -4009,6 +4009,585 @@ func TestDeleteLore_ConcurrentDeletes(t *testing.T) {
 	if notFoundCount != numGoroutines-1 {
 		t.Errorf("expected %d ErrNotFound, got %d", numGoroutines-1, notFoundCount)
 	}
+}
+
+// --- Backward Compatibility: Change Log Tests (Story 8.8) ---
+
+func TestIngestLore_WritesChangeLog(t *testing.T) {
+	// Given: A store with no change_log entries
+	s := newIngestTestStore(t)
+	ctx := context.Background()
+
+	// When: Ingesting a single entry
+	entries := []types.NewLoreEntry{
+		{Content: "test content", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-1"},
+	}
+	result, err := s.IngestLore(ctx, entries)
+	if err != nil {
+		t.Fatalf("IngestLore failed: %v", err)
+	}
+	if result.Accepted != 1 {
+		t.Fatalf("expected 1 accepted, got %d", result.Accepted)
+	}
+
+	// Then: change_log has exactly 1 upsert entry
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 change_log entry, got %d", len(clEntries))
+	}
+	if clEntries[0].Operation != "upsert" {
+		t.Errorf("expected operation 'upsert', got %q", clEntries[0].Operation)
+	}
+	if clEntries[0].TableName != "lore_entries" {
+		t.Errorf("expected table 'lore_entries', got %q", clEntries[0].TableName)
+	}
+}
+
+func TestIngestLore_ChangeLogPayload(t *testing.T) {
+	// Given: A store
+	s := newIngestTestStore(t)
+	ctx := context.Background()
+
+	// When: Ingesting an entry
+	entries := []types.NewLoreEntry{
+		{Content: "test payload content", Context: "during review", Category: "ARCHITECTURAL_DECISION", Confidence: 0.85, SourceID: "client-2"},
+	}
+	_, err := s.IngestLore(ctx, entries)
+	if err != nil {
+		t.Fatalf("IngestLore failed: %v", err)
+	}
+
+	// Then: change_log payload contains full entry JSON
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 change_log entry, got %d", len(clEntries))
+	}
+
+	// Verify payload is valid JSON with expected fields
+	var payload map[string]interface{}
+	if err := json.Unmarshal(clEntries[0].Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload["content"] != "test payload content" {
+		t.Errorf("payload content mismatch: %v", payload["content"])
+	}
+	if payload["category"] != "ARCHITECTURAL_DECISION" {
+		t.Errorf("payload category mismatch: %v", payload["category"])
+	}
+	if payload["confidence"] != 0.85 {
+		t.Errorf("payload confidence mismatch: %v", payload["confidence"])
+	}
+	if payload["id"] == nil || payload["id"] == "" {
+		t.Error("payload should contain non-empty id")
+	}
+}
+
+func TestIngestLore_ChangeLogSourceID(t *testing.T) {
+	// Given: A store
+	s := newIngestTestStore(t)
+	ctx := context.Background()
+
+	// When: Ingesting with SourceID="client-42"
+	entries := []types.NewLoreEntry{
+		{Content: "test source tracking", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-42"},
+	}
+	_, err := s.IngestLore(ctx, entries)
+	if err != nil {
+		t.Fatalf("IngestLore failed: %v", err)
+	}
+
+	// Then: change_log entry has source_id="client-42"
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 change_log entry, got %d", len(clEntries))
+	}
+	if clEntries[0].SourceID != "client-42" {
+		t.Errorf("expected source_id 'client-42', got %q", clEntries[0].SourceID)
+	}
+}
+
+func TestIngestLore_ChangeLogEntityID(t *testing.T) {
+	// Given: A store
+	s := newIngestTestStore(t)
+	ctx := context.Background()
+
+	// When: Ingesting an entry
+	entries := []types.NewLoreEntry{
+		{Content: "test entity id", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-1"},
+	}
+	_, err := s.IngestLore(ctx, entries)
+	if err != nil {
+		t.Fatalf("IngestLore failed: %v", err)
+	}
+
+	// Then: change_log entity_id matches the lore entry ID
+	var loreID string
+	err = s.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&loreID)
+	if err != nil {
+		t.Fatalf("failed to get lore ID: %v", err)
+	}
+
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 change_log entry, got %d", len(clEntries))
+	}
+	if clEntries[0].EntityID != loreID {
+		t.Errorf("entity_id %q does not match lore ID %q", clEntries[0].EntityID, loreID)
+	}
+}
+
+func TestIngestLore_MultipleEntries_ChangeLogSequences(t *testing.T) {
+	// Given: A store
+	s := newIngestTestStore(t)
+	ctx := context.Background()
+
+	// When: Ingesting 3 entries
+	entries := []types.NewLoreEntry{
+		{Content: "entry one", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-1"},
+		{Content: "entry two", Category: "EDGE_CASE_DISCOVERY", Confidence: 0.8, SourceID: "client-1"},
+		{Content: "entry three", Category: "IMPLEMENTATION_FRICTION", Confidence: 0.6, SourceID: "client-1"},
+	}
+	result, err := s.IngestLore(ctx, entries)
+	if err != nil {
+		t.Fatalf("IngestLore failed: %v", err)
+	}
+	if result.Accepted != 3 {
+		t.Fatalf("expected 3 accepted, got %d", result.Accepted)
+	}
+
+	// Then: change_log has 3 entries with incrementing sequences
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(clEntries) != 3 {
+		t.Fatalf("expected 3 change_log entries, got %d", len(clEntries))
+	}
+	for i := 1; i < len(clEntries); i++ {
+		if clEntries[i].Sequence <= clEntries[i-1].Sequence {
+			t.Errorf("sequences not incrementing: seq[%d]=%d, seq[%d]=%d",
+				i-1, clEntries[i-1].Sequence, i, clEntries[i].Sequence)
+		}
+	}
+}
+
+func TestDeleteLore_WritesChangeLog(t *testing.T) {
+	// Given: An entry exists
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Insert an entry
+	_, err = s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "to be deleted", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id string
+	err = s.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear change_log from ingest (so we only see the delete entry)
+	_, err = s.db.Exec("DELETE FROM change_log")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When: Deleting the entry
+	err = s.DeleteLore(ctx, id, "delete-client")
+	if err != nil {
+		t.Fatalf("DeleteLore failed: %v", err)
+	}
+
+	// Then: change_log has exactly 1 delete entry
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter failed: %v", err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 change_log entry, got %d", len(clEntries))
+	}
+	if clEntries[0].Operation != "delete" {
+		t.Errorf("expected operation 'delete', got %q", clEntries[0].Operation)
+	}
+	if clEntries[0].EntityID != id {
+		t.Errorf("expected entity_id %q, got %q", id, clEntries[0].EntityID)
+	}
+	if clEntries[0].TableName != "lore_entries" {
+		t.Errorf("expected table 'lore_entries', got %q", clEntries[0].TableName)
+	}
+}
+
+func TestDeleteLore_ChangeLogNoPayload(t *testing.T) {
+	// Given: An entry exists
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	_, err = s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "to delete", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id string
+	s.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	_, _ = s.db.Exec("DELETE FROM change_log")
+
+	// When: Deleting
+	err = s.DeleteLore(ctx, id, "client-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: payload is NULL
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(clEntries))
+	}
+	if clEntries[0].Payload != nil {
+		t.Errorf("expected nil payload for delete, got %v", clEntries[0].Payload)
+	}
+}
+
+func TestDeleteLore_ChangeLogSourceID(t *testing.T) {
+	// Given: An entry exists
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	_, err = s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "source test", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id string
+	s.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+	_, _ = s.db.Exec("DELETE FROM change_log")
+
+	// When: Deleting with sourceID="delete-source-99"
+	err = s.DeleteLore(ctx, id, "delete-source-99")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: change_log source_id="delete-source-99"
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(clEntries))
+	}
+	if clEntries[0].SourceID != "delete-source-99" {
+		t.Errorf("expected source_id 'delete-source-99', got %q", clEntries[0].SourceID)
+	}
+}
+
+func TestDeleteLore_NotFoundNoChangeLog(t *testing.T) {
+	// Given: No entries exist
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// When: Deleting non-existent entry
+	err = s.DeleteLore(ctx, "01ARZ3NDEKTSV4RRFFQ69G5FAV", "client-1")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+
+	// Then: No change_log entries
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clEntries) != 0 {
+		t.Errorf("expected 0 change_log entries, got %d", len(clEntries))
+	}
+}
+
+func TestFeedback_NoChangeLog(t *testing.T) {
+	// Given: An entry exists
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	_, err = s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "feedback test", Category: "PATTERN_OUTCOME", Confidence: 0.5, SourceID: "client-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id string
+	s.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+
+	// Clear change_log from ingest
+	_, _ = s.db.Exec("DELETE FROM change_log")
+
+	// When: Recording feedback
+	_, err = s.RecordFeedback(ctx, []types.FeedbackEntry{
+		{LoreID: id, Type: "helpful", SourceID: "client-1"},
+	})
+	if err != nil {
+		t.Fatalf("RecordFeedback failed: %v", err)
+	}
+
+	// Then: No change_log entries (feedback not synced)
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clEntries) != 0 {
+		t.Errorf("expected 0 change_log entries for feedback, got %d", len(clEntries))
+	}
+}
+
+func TestIngestLore_MergeWritesChangeLog(t *testing.T) {
+	// Given: A store with dedup enabled and an existing entry
+	baseEmbedding := makeTestEmbedding(0)
+	embeddings := map[string][]float32{
+		"First content":  baseEmbedding,
+		"Second content": baseEmbedding, // Same embedding = will be merged
+	}
+	s := setupDeduplicationTest(t, true, 0.92, embeddings)
+	defer s.Close()
+	ctx := context.Background()
+
+	// Insert first entry
+	_, err := s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "First content", Context: "First ctx", Category: "PATTERN_OUTCOME", Confidence: 0.8, SourceID: "source-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear change_log from first ingest
+	_, _ = s.db.Exec("DELETE FROM change_log")
+
+	// When: Ingesting a duplicate (triggers merge)
+	result, err := s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "Second content", Context: "Second ctx", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "source-2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Merged != 1 {
+		t.Fatalf("expected merged=1, got %d", result.Merged)
+	}
+
+	// Then: change_log has an upsert entry for the merged entity
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 change_log entry, got %d", len(clEntries))
+	}
+	if clEntries[0].Operation != "upsert" {
+		t.Errorf("expected operation 'upsert', got %q", clEntries[0].Operation)
+	}
+
+	// Verify the payload reflects the merged state
+	var payload map[string]interface{}
+	if err := json.Unmarshal(clEntries[0].Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	// Confidence should be boosted (0.8 + 0.10 = 0.9)
+	if payload["confidence"].(float64) < 0.89 || payload["confidence"].(float64) > 0.91 {
+		t.Errorf("expected merged confidence ~0.9, got %v", payload["confidence"])
+	}
+	// Source ID in change_log should be from the merging entry
+	if clEntries[0].SourceID != "source-2" {
+		t.Errorf("expected source_id 'source-2', got %q", clEntries[0].SourceID)
+	}
+}
+
+func TestLoreIngest_VisibleInSyncDelta(t *testing.T) {
+	// Integration test: entries ingested via /lore appear in change_log (visible via /sync/delta)
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// When: Ingesting via lore API (store method)
+	_, err = s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "integration test content", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "legacy-client"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: Entry is visible in change_log (which /sync/delta would serve)
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clEntries) != 1 {
+		t.Fatalf("expected 1 change_log entry, got %d", len(clEntries))
+	}
+
+	// Verify it's an upsert with full payload
+	if clEntries[0].Operation != "upsert" {
+		t.Errorf("expected 'upsert', got %q", clEntries[0].Operation)
+	}
+	if clEntries[0].Payload == nil {
+		t.Error("expected non-nil payload")
+	}
+}
+
+func TestLoreDelete_VisibleInSyncDelta(t *testing.T) {
+	// Integration test: deletes via /lore appear in change_log (visible via /sync/delta)
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Insert an entry
+	_, err = s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "will be deleted", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "client-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id string
+	s.db.QueryRow("SELECT id FROM lore_entries LIMIT 1").Scan(&id)
+
+	// When: Deleting via lore API (store method)
+	err = s.DeleteLore(ctx, id, "client-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: Both ingest and delete entries visible in change_log
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clEntries) != 2 {
+		t.Fatalf("expected 2 change_log entries (ingest + delete), got %d", len(clEntries))
+	}
+
+	// First entry: upsert from ingest
+	if clEntries[0].Operation != "upsert" {
+		t.Errorf("entry 0: expected 'upsert', got %q", clEntries[0].Operation)
+	}
+	// Second entry: delete
+	if clEntries[1].Operation != "delete" {
+		t.Errorf("entry 1: expected 'delete', got %q", clEntries[1].Operation)
+	}
+	if clEntries[1].EntityID != id {
+		t.Errorf("delete entity_id mismatch: expected %q, got %q", id, clEntries[1].EntityID)
+	}
+	if clEntries[1].Payload != nil {
+		t.Errorf("delete should have nil payload, got %v", clEntries[1].Payload)
+	}
+}
+
+func TestEndToEnd_LegacyAndSyncClients(t *testing.T) {
+	// End-to-end test: Legacy client ingests, sync client sees changes via delta
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Step 1: Legacy client ingests some data
+	_, err = s.IngestLore(ctx, []types.NewLoreEntry{
+		{Content: "entry A", Category: "PATTERN_OUTCOME", Confidence: 0.7, SourceID: "legacy-client-1"},
+		{Content: "entry B", Category: "EDGE_CASE_DISCOVERY", Confidence: 0.8, SourceID: "legacy-client-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2: Legacy client deletes entry A
+	var idA string
+	s.db.QueryRow("SELECT id FROM lore_entries WHERE content = 'entry A'").Scan(&idA)
+	err = s.DeleteLore(ctx, idA, "legacy-client-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: Sync client queries delta from beginning
+	clEntries, err := s.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Expected: 3 entries - upsert A, upsert B, delete A
+	if len(clEntries) != 3 {
+		t.Fatalf("expected 3 change_log entries, got %d", len(clEntries))
+	}
+
+	// Verify sequences are monotonically increasing
+	for i := 1; i < len(clEntries); i++ {
+		if clEntries[i].Sequence <= clEntries[i-1].Sequence {
+			t.Errorf("sequences not monotonic: %d >= %d", clEntries[i-1].Sequence, clEntries[i].Sequence)
+		}
+	}
+
+	// Verify the last entry is the delete
+	if clEntries[2].Operation != "delete" {
+		t.Errorf("expected last operation 'delete', got %q", clEntries[2].Operation)
+	}
+	if clEntries[2].EntityID != idA {
+		t.Errorf("delete entity_id mismatch")
+	}
+}
+
+// newIngestTestStore creates a store for ingest testing (no embedder, no dedup).
+func newIngestTestStore(t *testing.T) *SQLiteStore {
+	t.Helper()
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
 }
 
 // --- GetExtendedStats Tests ---

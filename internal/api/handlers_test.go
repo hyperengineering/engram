@@ -66,7 +66,7 @@ func (m *mockStore) GetLore(ctx context.Context, id string) (*types.LoreEntry, e
 	return nil, store.ErrNotFound
 }
 
-func (m *mockStore) DeleteLore(ctx context.Context, id string) error {
+func (m *mockStore) DeleteLore(ctx context.Context, id, sourceID string) error {
 	if m.deleteErr != nil {
 		return m.deleteErr
 	}
@@ -3072,6 +3072,202 @@ func TestDeleteEndpoint_RoundTrip(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("deleted entry ID %s not found in delta.DeletedIDs", entryID)
+	}
+}
+
+// --- Store Type Guard Tests (Story 8.8) ---
+
+func TestRequireRecallStore_DefaultStore(t *testing.T) {
+	// Given: A handler with no store manager (legacy mode)
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := newTestHandler(s, embedder, "test-key", "1.0.0")
+
+	// When: Checking store type for default route (no store_id in context)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/lore", nil)
+	w := httptest.NewRecorder()
+
+	result := handler.requireRecallStore(w, req)
+
+	// Then: Returns true (default store is always recall)
+	if !result {
+		t.Error("expected requireRecallStore to return true for default store")
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("expected no error response, got status %d", w.Code)
+	}
+}
+
+func TestRequireRecallStore_NoManager(t *testing.T) {
+	// Given: A handler with storeManager=nil (legacy mode)
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := newTestHandler(s, embedder, "test-key", "1.0.0")
+
+	// Set up context with a store ID but no manager
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/test-store/lore", nil)
+	ctx := WithStoreID(req.Context(), "test-store")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	result := handler.requireRecallStore(w, req)
+
+	// Then: Returns true (legacy mode)
+	if !result {
+		t.Error("expected requireRecallStore to return true when no manager")
+	}
+}
+
+func TestRequireRecallStore_RecallStore(t *testing.T) {
+	// Given: A handler with a recall-type store
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+	_, err := manager.CreateStore(ctx, "my-recall-store", "recall", "Recall store")
+	if err != nil {
+		t.Fatalf("CreateStore failed: %v", err)
+	}
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/my-recall-store/lore", nil)
+	reqCtx := WithStoreID(req.Context(), "my-recall-store")
+	req = req.WithContext(reqCtx)
+	w := httptest.NewRecorder()
+
+	result := handler.requireRecallStore(w, req)
+
+	// Then: Returns true (recall store type)
+	if !result {
+		t.Error("expected requireRecallStore to return true for recall store")
+	}
+}
+
+func TestRequireRecallStore_TractStore(t *testing.T) {
+	// Given: A handler with a tract-type store
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+	_, err := manager.CreateStore(ctx, "my-tract-store", "tract", "Tract store")
+	if err != nil {
+		t.Fatalf("CreateStore failed: %v", err)
+	}
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/my-tract-store/lore", nil)
+	reqCtx := WithStoreID(req.Context(), "my-tract-store")
+	req = req.WithContext(reqCtx)
+	w := httptest.NewRecorder()
+
+	result := handler.requireRecallStore(w, req)
+
+	// Then: Returns false with 400 error
+	if result {
+		t.Error("expected requireRecallStore to return false for tract store")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "only valid for recall stores") {
+		t.Errorf("expected error message about recall stores, got: %s", w.Body.String())
+	}
+}
+
+func TestRequireRecallStore_EmptyType(t *testing.T) {
+	// Given: A handler with a store that has empty type (defaults to recall)
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+	// Create with empty type (should default to recall)
+	_, err := manager.CreateStore(ctx, "empty-type-store", "", "Default type")
+	if err != nil {
+		t.Fatalf("CreateStore failed: %v", err)
+	}
+
+	s := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(s, manager, embedder, "test-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/empty-type-store/lore", nil)
+	reqCtx := WithStoreID(req.Context(), "empty-type-store")
+	req = req.WithContext(reqCtx)
+	w := httptest.NewRecorder()
+
+	result := handler.requireRecallStore(w, req)
+
+	// Then: Returns true (empty type defaults to recall)
+	if !result {
+		t.Error("expected requireRecallStore to return true for empty type")
+	}
+}
+
+func TestIngestHandler_TractStore(t *testing.T) {
+	// Given: A tract-type store accessed via /lore
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+	managed, err := manager.CreateStore(ctx, "tract-store", "tract", "Tract")
+	if err != nil {
+		t.Fatalf("CreateStore failed: %v", err)
+	}
+
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(managed.Store, manager, embedder, "test-key", "1.0.0")
+
+	body := `{"source_id": "client-1", "lore": [{"content": "test", "category": "PATTERN_OUTCOME", "confidence": 0.5}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/tract-store/lore", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx := WithStoreID(req.Context(), "tract-store")
+	req = req.WithContext(reqCtx)
+	w := httptest.NewRecorder()
+
+	// When: Calling IngestLore handler
+	handler.IngestLore(w, req)
+
+	// Then: 400 error
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400 for tract store, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteHandler_TractStore(t *testing.T) {
+	// Given: A tract-type store accessed via /lore
+	manager, _ := setupStoreManager(t)
+	defer manager.Close()
+
+	ctx := context.Background()
+	managed, err := manager.CreateStore(ctx, "tract-store-2", "tract", "Tract")
+	if err != nil {
+		t.Fatalf("CreateStore failed: %v", err)
+	}
+
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(managed.Store, manager, embedder, "test-key", "1.0.0")
+
+	// Set up chi context for URL param
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/stores/tract-store-2/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	reqCtx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	reqCtx = WithStoreID(reqCtx, "tract-store-2")
+	req = req.WithContext(reqCtx)
+	w := httptest.NewRecorder()
+
+	// When: Calling DeleteLore handler
+	handler.DeleteLore(w, req)
+
+	// Then: 400 error
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400 for tract store, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

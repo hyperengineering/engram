@@ -157,8 +157,45 @@ func (h *Handler) getStoreForRequest(r *http.Request) store.Store {
 	return h.store
 }
 
+// requireRecallStore checks if the store type is "recall".
+// Returns false and writes an error response if the store is not a recall store.
+// Legacy routes (no store_id) and legacy mode (no storeManager) always pass.
+func (h *Handler) requireRecallStore(w http.ResponseWriter, r *http.Request) bool {
+	storeID := StoreIDFromContext(r.Context())
+
+	// Default store is always recall
+	if storeID == "" || storeID == "default" {
+		return true
+	}
+
+	// Legacy mode (no multi-store support)
+	if h.storeManager == nil {
+		return true
+	}
+
+	managed, err := h.storeManager.GetStore(r.Context(), storeID)
+	if err != nil {
+		// Store not found - let the handler deal with it
+		return true
+	}
+
+	if managed.Meta.Type != "" && managed.Meta.Type != "recall" {
+		WriteProblem(w, r, http.StatusBadRequest,
+			fmt.Sprintf("Endpoint /lore/* only valid for recall stores. Store %q has type %q",
+				storeID, managed.Meta.Type))
+		return false
+	}
+
+	return true
+}
+
 // IngestLore handles POST /api/v1/lore and POST /api/v1/stores/{store_id}/lore
 func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
+	// Store type guard: /lore/* only valid for recall stores
+	if !h.requireRecallStore(w, r) {
+		return
+	}
+
 	start := time.Now()
 	storeID := StoreIDFromContext(r.Context())
 
@@ -530,6 +567,11 @@ func (h *Handler) Feedback(w http.ResponseWriter, r *http.Request) {
 
 // DeleteLore handles DELETE /api/v1/lore/{id} and DELETE /api/v1/stores/{store_id}/lore/{id}
 func (h *Handler) DeleteLore(w http.ResponseWriter, r *http.Request) {
+	// Store type guard: /lore/* only valid for recall stores
+	if !h.requireRecallStore(w, r) {
+		return
+	}
+
 	storeID := StoreIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -542,7 +584,9 @@ func (h *Handler) DeleteLore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.DeleteLore(r.Context(), id)
+	sourceID := extractSourceID(r)
+
+	err := s.DeleteLore(r.Context(), id, sourceID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Generic message - don't echo user-supplied ID (Issue #3)

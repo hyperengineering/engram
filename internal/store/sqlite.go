@@ -522,6 +522,8 @@ func (s *SQLiteStore) IngestLore(ctx context.Context, entries []types.NewLoreEnt
 	defer tx.Rollback()
 
 	// 4. Process each entry
+	now := time.Now().UTC().Format(time.RFC3339)
+
 	for i, entry := range entries {
 		var embedding []float32
 		hasEmbedding := embeddingErr == nil && embeddings != nil && i < len(embeddings) && len(embeddings[i]) > 0
@@ -542,15 +544,36 @@ func (s *SQLiteStore) IngestLore(ctx context.Context, entries []types.NewLoreEnt
 				if err := s.mergeLoreInTx(ctx, tx, bestMatch.ID, entry); err != nil {
 					return nil, fmt.Errorf("merge lore: %w", err)
 				}
+
+				// Write change_log entry for merged entry
+				mergedEntry, err := s.getLoreInTx(ctx, tx, bestMatch.ID)
+				if err != nil {
+					return nil, fmt.Errorf("get merged entry: %w", err)
+				}
+				if err := s.writeChangeLogInTx(ctx, tx, "lore_entries", bestMatch.ID, "upsert", mergedEntry, entry.SourceID, now); err != nil {
+					return nil, fmt.Errorf("write change log: %w", err)
+				}
+
 				result.Merged++
 				continue
 			}
 		}
 
 		// 6. Store as new entry
-		if err := s.insertEntryInTx(ctx, tx, entry, embedding, hasEmbedding); err != nil {
+		id, err := s.insertEntryInTx(ctx, tx, entry, embedding, hasEmbedding)
+		if err != nil {
 			return nil, fmt.Errorf("insert entry: %w", err)
 		}
+
+		// Write change_log entry for new entry
+		newEntry, err := s.getLoreInTx(ctx, tx, id)
+		if err != nil {
+			return nil, fmt.Errorf("get new entry: %w", err)
+		}
+		if err := s.writeChangeLogInTx(ctx, tx, "lore_entries", id, "upsert", newEntry, entry.SourceID, now); err != nil {
+			return nil, fmt.Errorf("write change log: %w", err)
+		}
+
 		result.Accepted++
 	}
 
@@ -596,11 +619,18 @@ func (s *SQLiteStore) GetLore(ctx context.Context, id string) (*types.LoreEntry,
 }
 
 // DeleteLore soft-deletes a lore entry by setting deleted_at.
+// Writes a delete entry to change_log for sync protocol support.
 // Returns ErrNotFound if the entry doesn't exist or is already deleted.
-func (s *SQLiteStore) DeleteLore(ctx context.Context, id string) error {
+func (s *SQLiteStore) DeleteLore(ctx context.Context, id, sourceID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
 		UPDATE lore_entries
 		SET deleted_at = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
@@ -619,6 +649,15 @@ func (s *SQLiteStore) DeleteLore(ctx context.Context, id string) error {
 
 	if rowsAffected == 0 {
 		return ErrNotFound
+	}
+
+	// Write delete entry to change_log (null payload for deletes)
+	if err := s.writeChangeLogInTx(ctx, tx, "lore_entries", id, "delete", nil, sourceID, now); err != nil {
+		return fmt.Errorf("write change log: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil
@@ -818,12 +857,13 @@ func (s *SQLiteStore) mergeLoreInTx(ctx context.Context, qc queryContext, target
 }
 
 // insertEntryInTx inserts a new entry within a transaction.
-func (s *SQLiteStore) insertEntryInTx(ctx context.Context, qc queryContext, entry types.NewLoreEntry, embedding []float32, hasEmbedding bool) error {
+// Returns the generated entry ID.
+func (s *SQLiteStore) insertEntryInTx(ctx context.Context, qc queryContext, entry types.NewLoreEntry, embedding []float32, hasEmbedding bool) (string, error) {
 	id := ulid.Make().String()
 	sources := []string{entry.SourceID}
 	sourcesBytes, err := json.Marshal(sources)
 	if err != nil {
-		return fmt.Errorf("marshal sources: %w", err)
+		return "", fmt.Errorf("marshal sources: %w", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -855,7 +895,35 @@ func (s *SQLiteStore) insertEntryInTx(ctx context.Context, qc queryContext, entr
 		now,
 	)
 	if err != nil {
-		return fmt.Errorf("insert entry: %w", err)
+		return "", fmt.Errorf("insert entry: %w", err)
+	}
+
+	return id, nil
+}
+
+// writeChangeLogInTx appends an entry to the change_log within a transaction.
+func (s *SQLiteStore) writeChangeLogInTx(ctx context.Context, tx *sql.Tx, tableName, entityID, operation string, payload any, sourceID, createdAt string) error {
+	var payloadJSON []byte
+	var err error
+
+	if payload != nil {
+		payloadJSON, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal payload: %w", err)
+		}
+	}
+
+	var payloadVal any
+	if payloadJSON != nil {
+		payloadVal = string(payloadJSON)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO change_log (table_name, entity_id, operation, payload, source_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, tableName, entityID, operation, payloadVal, sourceID, createdAt)
+	if err != nil {
+		return fmt.Errorf("insert change_log: %w", err)
 	}
 
 	return nil
