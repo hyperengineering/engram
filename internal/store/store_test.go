@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	engramsync "github.com/hyperengineering/engram/internal/sync"
 	"github.com/hyperengineering/engram/internal/types"
 )
 
@@ -69,6 +70,33 @@ func (m *mockStore) GetStats(ctx context.Context) (*types.StoreStats, error) {
 }
 func (m *mockStore) GetExtendedStats(ctx context.Context) (*types.ExtendedStats, error) {
 	return nil, nil
+}
+func (m *mockStore) AppendChangeLog(ctx context.Context, entry *engramsync.ChangeLogEntry) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) AppendChangeLogBatch(ctx context.Context, entries []engramsync.ChangeLogEntry) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) GetChangeLogAfter(ctx context.Context, afterSeq int64, limit int) ([]engramsync.ChangeLogEntry, error) {
+	return nil, nil
+}
+func (m *mockStore) GetLatestSequence(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) CheckPushIdempotency(ctx context.Context, pushID string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+func (m *mockStore) RecordPushIdempotency(ctx context.Context, pushID, storeID string, response []byte, ttl time.Duration) error {
+	return nil
+}
+func (m *mockStore) CleanExpiredIdempotency(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) GetSyncMeta(ctx context.Context, key string) (string, error) {
+	return "", nil
+}
+func (m *mockStore) SetSyncMeta(ctx context.Context, key, value string) error {
+	return nil
 }
 func (m *mockStore) Close() error {
 	return nil

@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	engramsync "github.com/hyperengineering/engram/internal/sync"
 	"github.com/hyperengineering/engram/internal/types"
 )
 
@@ -29,5 +30,21 @@ type Store interface {
 	MarkEmbeddingFailed(ctx context.Context, id string) error
 	GetStats(ctx context.Context) (*types.StoreStats, error)
 	GetExtendedStats(ctx context.Context) (*types.ExtendedStats, error)
+
+	// Change log operations (sync protocol)
+	AppendChangeLog(ctx context.Context, entry *engramsync.ChangeLogEntry) (int64, error)
+	AppendChangeLogBatch(ctx context.Context, entries []engramsync.ChangeLogEntry) (int64, error)
+	GetChangeLogAfter(ctx context.Context, afterSeq int64, limit int) ([]engramsync.ChangeLogEntry, error)
+	GetLatestSequence(ctx context.Context) (int64, error)
+
+	// Push idempotency operations (sync protocol)
+	CheckPushIdempotency(ctx context.Context, pushID string) ([]byte, bool, error)
+	RecordPushIdempotency(ctx context.Context, pushID, storeID string, response []byte, ttl time.Duration) error
+	CleanExpiredIdempotency(ctx context.Context) (int64, error)
+
+	// Sync metadata operations
+	GetSyncMeta(ctx context.Context, key string) (string, error)
+	SetSyncMeta(ctx context.Context, key, value string) error
+
 	Close() error
 }
