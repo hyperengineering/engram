@@ -279,6 +279,94 @@ func writePushValidationErrors(w http.ResponseWriter, errs plugin.ValidationErro
 	json.NewEncoder(w).Encode(resp)
 }
 
+// SyncDelta handles GET /api/v1/stores/{store_id}/sync/delta
+func (h *Handler) SyncDelta(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	ctx := r.Context()
+	storeID := StoreIDFromContext(ctx)
+
+	// 1. Get store
+	s := h.getStoreForRequest(r)
+	if s == nil {
+		WriteProblem(w, r, http.StatusNotFound, "Store not found")
+		return
+	}
+
+	// 2. Parse query parameters
+	req, err := parseDeltaRequest(r)
+	if err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 3. Query change log
+	entries, err := s.GetChangeLogAfter(ctx, req.After, req.Limit)
+	if err != nil {
+		slog.Error("delta query failed",
+			"component", "api",
+			"action", "sync_delta_failed",
+			"store_id", storeID,
+			"after", req.After,
+			"error", err,
+		)
+		WriteProblem(w, r, http.StatusInternalServerError, "Failed to retrieve delta")
+		return
+	}
+
+	// 4. Get latest sequence for pagination info
+	latestSeq, err := s.GetLatestSequence(ctx)
+	if err != nil {
+		slog.Error("get latest sequence failed",
+			"component", "api",
+			"action", "sync_delta_failed",
+			"store_id", storeID,
+			"error", err,
+		)
+		WriteProblem(w, r, http.StatusInternalServerError, "Failed to retrieve delta")
+		return
+	}
+
+	// 5. Calculate pagination info
+	var lastSeq int64
+	if len(entries) > 0 {
+		lastSeq = entries[len(entries)-1].Sequence
+	} else {
+		lastSeq = req.After
+	}
+
+	hasMore := len(entries) == req.Limit && lastSeq < latestSeq
+
+	// 6. Build response
+	resp := engramsync.DeltaResponse{
+		Entries:        entries,
+		LastSequence:   lastSeq,
+		LatestSequence: latestSeq,
+		HasMore:        hasMore,
+	}
+
+	// Ensure entries is [] not null in JSON
+	if resp.Entries == nil {
+		resp.Entries = []engramsync.ChangeLogEntry{}
+	}
+
+	// 7. Write response
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+
+	slog.Info("sync delta served",
+		"component", "api",
+		"action", "sync_delta",
+		"store_id", storeID,
+		"after", req.After,
+		"limit", req.Limit,
+		"entries_returned", len(entries),
+		"last_sequence", lastSeq,
+		"latest_sequence", latestSeq,
+		"has_more", hasMore,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+}
+
 // parseDeltaRequest extracts and validates query parameters for GET /sync/delta.
 func parseDeltaRequest(r *http.Request) (engramsync.DeltaRequest, error) {
 	var req engramsync.DeltaRequest
