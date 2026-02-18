@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/hyperengineering/engram/internal/multistore"
 	"github.com/hyperengineering/engram/internal/plugin"
 	"github.com/hyperengineering/engram/internal/plugin/recall"
+	"github.com/hyperengineering/engram/internal/store"
 	engramsync "github.com/hyperengineering/engram/internal/sync"
 	"github.com/hyperengineering/engram/internal/types"
 )
@@ -1256,5 +1259,169 @@ func TestSyncDelta_FullPagination(t *testing.T) {
 			t.Errorf("duplicate sequence %d", e.Sequence)
 		}
 		seen[e.Sequence] = true
+	}
+}
+
+// --- SyncSnapshot Handler Tests ---
+
+func TestSyncSnapshot_Success(t *testing.T) {
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(bytes.NewReader(testData))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := newTestHandler(s, embedder, "test-api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	if !bytes.Equal(w.Body.Bytes(), testData) {
+		t.Errorf("body = %q, want %q", w.Body.String(), string(testData))
+	}
+}
+
+func TestSyncSnapshot_ContentType(t *testing.T) {
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(bytes.NewReader(testData))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := newTestHandler(s, embedder, "test-api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/octet-stream")
+	}
+}
+
+func TestSyncSnapshot_NotAvailable(t *testing.T) {
+	s := &mockStore{
+		stats:       &types.StoreStats{},
+		snapshotErr: store.ErrSnapshotNotAvailable,
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := newTestHandler(s, embedder, "test-api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+
+	retryAfter := w.Header().Get("Retry-After")
+	if retryAfter != "60" {
+		t.Errorf("Retry-After = %q, want %q", retryAfter, "60")
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/problem+json")
+	}
+}
+
+func TestSyncSnapshot_StoreError(t *testing.T) {
+	s := &mockStore{
+		stats:       &types.StoreStats{},
+		snapshotErr: errors.New("disk failure"),
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := newTestHandler(s, embedder, "test-api-key", "1.0.0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestSyncSnapshot_StoreNotFound(t *testing.T) {
+	manager, handler, _ := setupSyncTestEnv(t)
+	defer manager.Close()
+	router := NewRouter(handler, manager)
+
+	httpReq := httptest.NewRequest(http.MethodGet, "/api/v1/stores/nonexistent/sync/snapshot", nil)
+	httpReq.Header.Set("Authorization", "Bearer test-api-key")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSyncSnapshot_Unauthorized(t *testing.T) {
+	manager, handler, _ := setupSyncTestEnv(t)
+	defer manager.Close()
+	router := NewRouter(handler, manager)
+
+	httpReq := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	// No Authorization header
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestSyncSnapshot_RouteRegistered(t *testing.T) {
+	manager, handler, _ := setupSyncTestEnv(t)
+	defer manager.Close()
+	router := NewRouter(handler, manager)
+
+	// Generate a snapshot so we get 200 instead of 503
+	ctx := context.Background()
+	managed, err := manager.GetStore(ctx, "test-store")
+	if err != nil {
+		t.Fatalf("GetStore() error = %v", err)
+	}
+	if err := managed.Store.GenerateSnapshot(ctx); err != nil {
+		t.Fatalf("GenerateSnapshot() error = %v", err)
+	}
+
+	httpReq := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	httpReq.Header.Set("Authorization", "Bearer test-api-key")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for registered route, got %d: %s", w.Code, w.Body.String())
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/octet-stream")
+	}
+
+	// Verify it looks like a SQLite file
+	body := w.Body.String()
+	if !strings.HasPrefix(body, "SQLite format 3") {
+		t.Errorf("body doesn't look like a SQLite file, got prefix: %q", body[:min(len(body), 20)])
 	}
 }

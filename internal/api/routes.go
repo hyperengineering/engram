@@ -61,6 +61,7 @@ func NewRouter(h *Handler, mgr StoreGetter) *chi.Mux {
 
 					r.Post("/push", h.SyncPush)
 					r.Get("/delta", h.SyncDelta)
+					r.Get("/snapshot", h.SyncSnapshot)
 				})
 			}
 

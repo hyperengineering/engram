@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -363,6 +364,71 @@ func (h *Handler) SyncDelta(w http.ResponseWriter, r *http.Request) {
 		"last_sequence", lastSeq,
 		"latest_sequence", latestSeq,
 		"has_more", hasMore,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+}
+
+// SyncSnapshot handles GET /api/v1/stores/{store_id}/sync/snapshot
+// Streams the cached database snapshot as application/octet-stream.
+// Returns 503 with Retry-After if no snapshot is available.
+func (h *Handler) SyncSnapshot(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	ctx := r.Context()
+	storeID := StoreIDFromContext(ctx)
+
+	// Get store
+	s := h.getStoreForRequest(r)
+	if s == nil {
+		WriteProblem(w, r, http.StatusNotFound, "Store not found")
+		return
+	}
+
+	// Get snapshot reader
+	reader, err := s.GetSnapshot(ctx)
+	if errors.Is(err, store.ErrSnapshotNotAvailable) {
+		slog.Warn("sync snapshot not available",
+			"component", "api",
+			"action", "sync_snapshot_unavailable",
+			"store_id", storeID,
+			"remote_addr", r.RemoteAddr,
+		)
+		w.Header().Set("Retry-After", "60")
+		WriteProblem(w, r, http.StatusServiceUnavailable,
+			"Snapshot not yet available. Please retry after the indicated interval.")
+		return
+	}
+	if err != nil {
+		slog.Error("sync snapshot retrieval failed",
+			"component", "api",
+			"action", "sync_snapshot_failed",
+			"store_id", storeID,
+			"remote_addr", r.RemoteAddr,
+			"error", err,
+		)
+		WriteProblem(w, r, http.StatusInternalServerError,
+			"Internal error retrieving snapshot")
+		return
+	}
+	defer reader.Close()
+
+	// Stream snapshot
+	w.Header().Set("Content-Type", "application/octet-stream")
+	bytesWritten, err := io.Copy(w, reader)
+	if err != nil {
+		slog.Debug("sync snapshot stream interrupted",
+			"component", "api",
+			"store_id", storeID,
+			"error", err,
+		)
+		return
+	}
+
+	slog.Info("sync snapshot served",
+		"component", "api",
+		"action", "sync_snapshot",
+		"store_id", storeID,
+		"remote_addr", r.RemoteAddr,
+		"bytes_served", bytesWritten,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 }
