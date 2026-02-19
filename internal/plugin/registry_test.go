@@ -12,6 +12,7 @@ import (
 // stubPlugin is a minimal DomainPlugin for testing the registry.
 type stubPlugin struct {
 	typeName string
+	schemas  []TableSchema
 }
 
 func (s *stubPlugin) Type() string { return s.typeName }
@@ -22,6 +23,7 @@ func (s *stubPlugin) ValidatePush(_ context.Context, entries []engramsync.Change
 func (s *stubPlugin) OnReplay(_ context.Context, _ ReplayStore, _ []engramsync.ChangeLogEntry) error {
 	return nil
 }
+func (s *stubPlugin) TableSchemas() []TableSchema { return s.schemas }
 
 func TestRegister_NewPlugin(t *testing.T) {
 	Reset()
@@ -226,4 +228,81 @@ func TestPluginRegistry_ConcurrentAccess(t *testing.T) {
 
 func stubType(i int) string {
 	return "type-" + string(rune('a'+i))
+}
+
+// --- Table Schema Registry Tests ---
+
+func TestRegister_RegistersTableSchemas(t *testing.T) {
+	Reset()
+	p := &stubPlugin{
+		typeName: "test-plugin",
+		schemas: []TableSchema{
+			{Name: "test_table", Columns: []string{"id", "name"}, SoftDelete: false},
+			{Name: "other_table", Columns: []string{"id", "value"}, SoftDelete: true},
+		},
+	}
+	Register(p)
+
+	s, ok := GetTableSchema("test_table")
+	if !ok {
+		t.Fatal("GetTableSchema(test_table) ok = false, want true")
+	}
+	if s.Name != "test_table" {
+		t.Errorf("Name = %q, want %q", s.Name, "test_table")
+	}
+	if len(s.Columns) != 2 {
+		t.Errorf("Columns length = %d, want 2", len(s.Columns))
+	}
+
+	s2, ok2 := GetTableSchema("other_table")
+	if !ok2 {
+		t.Fatal("GetTableSchema(other_table) ok = false, want true")
+	}
+	if !s2.SoftDelete {
+		t.Error("SoftDelete = false, want true")
+	}
+}
+
+func TestGetTableSchema_NotFound(t *testing.T) {
+	Reset()
+
+	_, ok := GetTableSchema("nonexistent")
+	if ok {
+		t.Error("GetTableSchema(nonexistent) ok = true, want false")
+	}
+}
+
+func TestReset_ClearsTableSchemas(t *testing.T) {
+	Reset()
+	p := &stubPlugin{
+		typeName: "schema-plugin",
+		schemas: []TableSchema{
+			{Name: "some_table", Columns: []string{"id"}, SoftDelete: false},
+		},
+	}
+	Register(p)
+
+	// Verify it was registered
+	_, ok := GetTableSchema("some_table")
+	if !ok {
+		t.Fatal("GetTableSchema should return true before Reset")
+	}
+
+	Reset()
+
+	_, ok = GetTableSchema("some_table")
+	if ok {
+		t.Error("GetTableSchema should return false after Reset")
+	}
+}
+
+func TestRegister_NilSchemas_NoError(t *testing.T) {
+	Reset()
+	p := &stubPlugin{typeName: "nil-schemas", schemas: nil}
+	Register(p) // should not panic
+
+	_, ok := GetTableSchema("anything")
+	if ok {
+		t.Error("no schemas should be registered for nil TableSchemas()")
+	}
 }

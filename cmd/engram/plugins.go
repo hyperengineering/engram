@@ -4,6 +4,7 @@ import (
 	"github.com/hyperengineering/engram/internal/plugin"
 	"github.com/hyperengineering/engram/internal/plugin/generic"
 	"github.com/hyperengineering/engram/internal/plugin/recall"
+	"github.com/hyperengineering/engram/internal/plugin/tract"
 )
 
 // initPlugins registers all built-in domain plugins.
@@ -14,5 +15,5 @@ func initPlugins() {
 
 	// Register type-specific plugins.
 	plugin.Register(recall.New())
-	// plugin.Register(tract.New())  // Phase 2
+	plugin.Register(tract.New())
 }

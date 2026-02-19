@@ -1,14 +1,25 @@
 package plugin
 
 import (
+	"fmt"
+	"regexp"
 	"sync"
 )
+
+// columnNameRegex validates column names to prevent SQL injection.
+var columnNameRegex = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
 // registry holds all registered domain plugins.
 var (
 	registryMu sync.RWMutex
 	plugins    = make(map[string]DomainPlugin)
 	generic    DomainPlugin // fallback plugin
+)
+
+// table schema registry
+var (
+	tableSchemaMu sync.RWMutex
+	tableSchemas  = make(map[string]TableSchema) // tableName -> schema
 )
 
 // Register adds a domain plugin to the registry.
@@ -23,6 +34,7 @@ func Register(p DomainPlugin) {
 		panic("plugin already registered: " + t)
 	}
 	plugins[t] = p
+	registerTableSchemas(p)
 }
 
 // Get returns the plugin for the given store type.
@@ -75,4 +87,57 @@ func Reset() {
 	defer registryMu.Unlock()
 	plugins = make(map[string]DomainPlugin)
 	generic = nil
+	ResetTableSchemas()
+}
+
+// registerTableSchemas registers table schemas from a plugin.
+// Called automatically during Register() for plugins that declare schemas.
+func registerTableSchemas(p DomainPlugin) {
+	schemas := p.TableSchemas()
+	if schemas == nil {
+		return
+	}
+	tableSchemaMu.Lock()
+	defer tableSchemaMu.Unlock()
+	for _, s := range schemas {
+		// Validate column names at registration time to prevent SQL injection
+		for _, col := range s.Columns {
+			if !columnNameRegex.MatchString(col) {
+				panic(fmt.Sprintf("invalid column name %q in table %q", col, s.Name))
+			}
+		}
+		tableSchemas[s.Name] = s
+	}
+}
+
+// GetTableSchema returns the schema for the given table name.
+// Returns ok=false if no schema is registered (table uses legacy hardcoded path).
+func GetTableSchema(tableName string) (TableSchema, bool) {
+	tableSchemaMu.RLock()
+	defer tableSchemaMu.RUnlock()
+	s, ok := tableSchemas[tableName]
+	return s, ok
+}
+
+// ResetTableSchemas clears all registered schemas. Only for testing.
+func ResetTableSchemas() {
+	tableSchemaMu.Lock()
+	defer tableSchemaMu.Unlock()
+	tableSchemas = make(map[string]TableSchema)
+}
+
+// RegisterTableSchemas registers individual table schemas directly.
+// This is primarily used by tests and store initialization code.
+func RegisterTableSchemas(schemas ...TableSchema) {
+	tableSchemaMu.Lock()
+	defer tableSchemaMu.Unlock()
+	for _, s := range schemas {
+		// Validate column names at registration time
+		for _, col := range s.Columns {
+			if !columnNameRegex.MatchString(col) {
+				panic(fmt.Sprintf("invalid column name %q in table %q", col, s.Name))
+			}
+		}
+		tableSchemas[s.Name] = s
+	}
 }

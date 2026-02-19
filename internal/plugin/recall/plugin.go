@@ -141,5 +141,10 @@ func (p *Plugin) OnReplay(ctx context.Context, store plugin.ReplayStore, entries
 	return nil
 }
 
+// TableSchemas returns nil — Recall uses the hardcoded lore_entries path.
+func (p *Plugin) TableSchemas() []plugin.TableSchema {
+	return nil
+}
+
 // Ensure Plugin implements DomainPlugin at compile time.
 var _ plugin.DomainPlugin = (*Plugin)(nil)

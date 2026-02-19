@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hyperengineering/engram/internal/plugin"
 	"github.com/hyperengineering/engram/internal/store"
 )
 
@@ -38,6 +39,17 @@ func NewManagedStore(id, basePath string) (*ManagedStore, error) {
 	sqliteStore, err := store.NewSQLiteStore(dbPath, store.WithStoreID(id))
 	if err != nil {
 		return nil, fmt.Errorf("open store database: %w", err)
+	}
+
+	// Apply plugin-specific migrations if available
+	p, _ := plugin.Get(meta.Type)
+	if p != nil {
+		if migs := p.Migrations(); len(migs) > 0 {
+			if err := store.RunPluginMigrations(sqliteStore.DB(), migs); err != nil {
+				sqliteStore.Close()
+				return nil, fmt.Errorf("run plugin migrations for %q: %w", meta.Type, err)
+			}
+		}
 	}
 
 	return &ManagedStore{

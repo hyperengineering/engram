@@ -192,6 +192,11 @@ func enablePragmas(db *sql.DB) error {
 	return nil
 }
 
+// DB returns the underlying *sql.DB for direct access (e.g., plugin migrations).
+func (s *SQLiteStore) DB() *sql.DB {
+	return s.db
+}
+
 // Close closes the database connection
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()

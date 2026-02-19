@@ -38,5 +38,10 @@ func (p *Plugin) OnReplay(_ context.Context, _ plugin.ReplayStore, _ []sync.Chan
 	return nil
 }
 
+// TableSchemas returns nil — generic plugin has no domain tables.
+func (p *Plugin) TableSchemas() []plugin.TableSchema {
+	return nil
+}
+
 // Ensure Plugin implements DomainPlugin at compile time.
 var _ plugin.DomainPlugin = (*Plugin)(nil)

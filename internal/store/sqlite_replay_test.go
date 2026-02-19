@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/hyperengineering/engram/internal/plugin"
 	engramsync "github.com/hyperengineering/engram/internal/sync"
 )
 
@@ -652,5 +654,592 @@ func TestAppendChangeLogBatchTx_Rollback(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Errorf("expected 0 change log entries after rollback, got %d", len(result))
+	}
+}
+
+// =============================================================================
+// Phase 7: Plugin Migration Runner + DB() accessor tests
+// =============================================================================
+
+func TestRunPluginMigrations_CreatesTable(t *testing.T) {
+	s := newReplayTestStore(t)
+
+	migrations := []plugin.Migration{
+		{
+			Version: 999,
+			Name:    "test_migration",
+			UpSQL:   "CREATE TABLE IF NOT EXISTS pm_test (id TEXT PRIMARY KEY)",
+		},
+	}
+
+	err := RunPluginMigrations(s.DB(), migrations)
+	if err != nil {
+		t.Fatalf("RunPluginMigrations() error = %v", err)
+	}
+
+	// Verify plugin_migrations table was created
+	var count int
+	err = s.DB().QueryRow("SELECT COUNT(*) FROM plugin_migrations WHERE version = 999").Scan(&count)
+	if err != nil {
+		t.Fatalf("query plugin_migrations: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("migration record count = %d, want 1", count)
+	}
+}
+
+func TestRunPluginMigrations_AppliesSQL(t *testing.T) {
+	s := newReplayTestStore(t)
+
+	migrations := []plugin.Migration{
+		{
+			Version: 100,
+			Name:    "create_test",
+			UpSQL:   "CREATE TABLE IF NOT EXISTS pm_items (id TEXT PRIMARY KEY, name TEXT)",
+		},
+	}
+
+	if err := RunPluginMigrations(s.DB(), migrations); err != nil {
+		t.Fatalf("RunPluginMigrations() error = %v", err)
+	}
+
+	// Verify the table was created by the migration
+	_, err := s.DB().Exec("INSERT INTO pm_items (id, name) VALUES ('t1', 'test')")
+	if err != nil {
+		t.Fatalf("insert into pm_items: %v (table not created)", err)
+	}
+}
+
+func TestRunPluginMigrations_Idempotent(t *testing.T) {
+	s := newReplayTestStore(t)
+
+	migrations := []plugin.Migration{
+		{
+			Version: 100,
+			Name:    "create_test",
+			UpSQL:   "CREATE TABLE IF NOT EXISTS pm_idem (id TEXT PRIMARY KEY)",
+		},
+	}
+
+	// Apply twice
+	if err := RunPluginMigrations(s.DB(), migrations); err != nil {
+		t.Fatalf("first RunPluginMigrations() error = %v", err)
+	}
+	if err := RunPluginMigrations(s.DB(), migrations); err != nil {
+		t.Fatalf("second RunPluginMigrations() error = %v (not idempotent)", err)
+	}
+
+	// Verify only one record
+	var count int
+	s.DB().QueryRow("SELECT COUNT(*) FROM plugin_migrations WHERE version = 100").Scan(&count)
+	if count != 1 {
+		t.Errorf("migration record count = %d, want 1 (applied only once)", count)
+	}
+}
+
+func TestRunPluginMigrations_EmptySlice(t *testing.T) {
+	s := newReplayTestStore(t)
+
+	// Empty migrations should be a no-op
+	err := RunPluginMigrations(s.DB(), nil)
+	if err != nil {
+		t.Fatalf("RunPluginMigrations(nil) error = %v", err)
+	}
+
+	err = RunPluginMigrations(s.DB(), []plugin.Migration{})
+	if err != nil {
+		t.Fatalf("RunPluginMigrations([]) error = %v", err)
+	}
+}
+
+func TestSQLiteStore_DB_NotNil(t *testing.T) {
+	s := newReplayTestStore(t)
+	if s.DB() == nil {
+		t.Error("DB() returned nil")
+	}
+}
+
+// =============================================================================
+// Generic table-agnostic replay tests
+// =============================================================================
+
+// newGenericReplayTestStore creates a test store with a custom table and registered schema.
+func newGenericReplayTestStore(t *testing.T) *SQLiteStore {
+	t.Helper()
+	plugin.ResetTableSchemas()
+	t.Cleanup(func() { plugin.ResetTableSchemas() })
+
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Create a test table
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS test_items (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			status TEXT,
+			created_at TEXT,
+			updated_at TEXT
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create test_items table: %v", err)
+	}
+
+	// Register schema
+	plugin.RegisterTableSchemas(plugin.TableSchema{
+		Name:       "test_items",
+		Columns:    []string{"id", "name", "status", "created_at", "updated_at"},
+		SoftDelete: false,
+	})
+
+	return s
+}
+
+// RegisterTableSchemas is a helper to register a single schema for testing.
+// It uses the exported GetTableSchema/ResetTableSchemas but we need a way to register
+// individual schemas. We'll use the generic mechanism via a plugin or directly.
+func init() {
+	// Make RegisterTableSchemasForTest available as a package-level function.
+	// We only need this for test code, but since this is a _test.go file it's fine.
+}
+
+// --- Seed 2.2: Generic upsert for a simple table ---
+
+func TestGenericUpsertRow_NewEntry(t *testing.T) {
+	s := newGenericReplayTestStore(t)
+	ctx := context.Background()
+
+	payload := []byte(`{"id":"item-1","name":"Test Item","status":"active","created_at":"2026-01-01T00:00:00Z"}`)
+	err := s.UpsertRow(ctx, "test_items", "item-1", payload)
+	if err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	// Verify row exists via raw SQL
+	var name, status string
+	err = s.db.QueryRowContext(ctx, "SELECT name, status FROM test_items WHERE id = ?", "item-1").Scan(&name, &status)
+	if err != nil {
+		t.Fatalf("query test_items: %v", err)
+	}
+	if name != "Test Item" {
+		t.Errorf("name = %q, want %q", name, "Test Item")
+	}
+	if status != "active" {
+		t.Errorf("status = %q, want %q", status, "active")
+	}
+}
+
+func TestGenericUpsertRow_UpdateEntry(t *testing.T) {
+	s := newGenericReplayTestStore(t)
+	ctx := context.Background()
+
+	// Insert
+	payload := []byte(`{"id":"item-1","name":"Original","status":"active","created_at":"2026-01-01T00:00:00Z"}`)
+	if err := s.UpsertRow(ctx, "test_items", "item-1", payload); err != nil {
+		t.Fatalf("first UpsertRow() error = %v", err)
+	}
+
+	// Update
+	payload = []byte(`{"id":"item-1","name":"Updated","status":"done","created_at":"2026-01-01T00:00:00Z"}`)
+	if err := s.UpsertRow(ctx, "test_items", "item-1", payload); err != nil {
+		t.Fatalf("second UpsertRow() error = %v", err)
+	}
+
+	var name, status string
+	err := s.db.QueryRowContext(ctx, "SELECT name, status FROM test_items WHERE id = ?", "item-1").Scan(&name, &status)
+	if err != nil {
+		t.Fatalf("query test_items: %v", err)
+	}
+	if name != "Updated" {
+		t.Errorf("name = %q, want %q", name, "Updated")
+	}
+	if status != "done" {
+		t.Errorf("status = %q, want %q", status, "done")
+	}
+}
+
+// --- Seed 2.3: Generic upsert edge cases ---
+
+func TestGenericUpsertRow_IDMismatch(t *testing.T) {
+	s := newGenericReplayTestStore(t)
+	ctx := context.Background()
+
+	payload := []byte(`{"id":"wrong-id","name":"Test","status":"active"}`)
+	err := s.UpsertRow(ctx, "test_items", "item-1", payload)
+	if err == nil {
+		t.Fatal("expected error for ID mismatch")
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Errorf("error = %v, want contains 'does not match'", err)
+	}
+}
+
+func TestGenericUpsertRow_InvalidJSON(t *testing.T) {
+	s := newGenericReplayTestStore(t)
+	ctx := context.Background()
+
+	err := s.UpsertRow(ctx, "test_items", "item-1", []byte(`not json`))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "unmarshal") {
+		t.Errorf("error = %v, want contains 'unmarshal'", err)
+	}
+}
+
+func TestGenericUpsertRow_JSONMetadataField(t *testing.T) {
+	plugin.ResetTableSchemas()
+	defer plugin.ResetTableSchemas()
+
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Create table with metadata column
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS test_meta (
+			id TEXT PRIMARY KEY,
+			metadata TEXT,
+			updated_at TEXT
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	plugin.RegisterTableSchemas(plugin.TableSchema{
+		Name:       "test_meta",
+		Columns:    []string{"id", "metadata", "updated_at"},
+		SoftDelete: false,
+	})
+
+	// Upsert with JSON object metadata
+	payload := []byte(`{"id":"m1","metadata":{"key":"val","nested":true}}`)
+	if err := s.UpsertRow(ctx, "test_meta", "m1", payload); err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	// Verify metadata stored as JSON string
+	var metadataStr string
+	err = s.db.QueryRowContext(ctx, "SELECT metadata FROM test_meta WHERE id = ?", "m1").Scan(&metadataStr)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+
+	// Parse to verify it's valid JSON
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataStr), &parsed); err != nil {
+		t.Fatalf("metadata is not valid JSON: %v", err)
+	}
+	if parsed["key"] != "val" {
+		t.Errorf("metadata.key = %v, want %q", parsed["key"], "val")
+	}
+}
+
+func TestGenericUpsertRow_NullableFields(t *testing.T) {
+	s := newGenericReplayTestStore(t)
+	ctx := context.Background()
+
+	// Upsert with null status
+	payload := []byte(`{"id":"item-1","name":"Test","status":null}`)
+	if err := s.UpsertRow(ctx, "test_items", "item-1", payload); err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	var status sql.NullString
+	err := s.db.QueryRowContext(ctx, "SELECT status FROM test_items WHERE id = ?", "item-1").Scan(&status)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if status.Valid {
+		t.Errorf("status should be NULL, got %q", status.String)
+	}
+}
+
+// --- Seed 2.4: Generic delete ---
+
+func TestGenericDeleteRow_SoftDelete(t *testing.T) {
+	plugin.ResetTableSchemas()
+	defer plugin.ResetTableSchemas()
+
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Create table with soft delete support
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS test_soft (
+			id TEXT PRIMARY KEY,
+			name TEXT,
+			updated_at TEXT,
+			deleted_at TEXT
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	plugin.RegisterTableSchemas(plugin.TableSchema{
+		Name:       "test_soft",
+		Columns:    []string{"id", "name", "updated_at", "deleted_at"},
+		SoftDelete: true,
+	})
+
+	// Insert a row
+	payload := []byte(`{"id":"s1","name":"Soft Item"}`)
+	if err := s.UpsertRow(ctx, "test_soft", "s1", payload); err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	// Soft delete
+	if err := s.DeleteRow(ctx, "test_soft", "s1"); err != nil {
+		t.Fatalf("DeleteRow() error = %v", err)
+	}
+
+	// Verify row still exists with deleted_at set
+	var deletedAt sql.NullString
+	err = s.db.QueryRowContext(ctx, "SELECT deleted_at FROM test_soft WHERE id = ?", "s1").Scan(&deletedAt)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !deletedAt.Valid {
+		t.Error("deleted_at should be set for soft delete")
+	}
+}
+
+func TestGenericDeleteRow_HardDelete(t *testing.T) {
+	s := newGenericReplayTestStore(t) // test_items has SoftDelete=false
+	ctx := context.Background()
+
+	// Insert a row
+	payload := []byte(`{"id":"item-1","name":"Delete Me","status":"active"}`)
+	if err := s.UpsertRow(ctx, "test_items", "item-1", payload); err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	// Hard delete
+	if err := s.DeleteRow(ctx, "test_items", "item-1"); err != nil {
+		t.Fatalf("DeleteRow() error = %v", err)
+	}
+
+	// Verify row is actually gone
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_items WHERE id = ?", "item-1").Scan(&count)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("row count = %d, want 0 (hard delete)", count)
+	}
+}
+
+func TestGenericDeleteRow_Idempotent(t *testing.T) {
+	s := newGenericReplayTestStore(t)
+	ctx := context.Background()
+
+	// Delete non-existent row — should not error
+	err := s.DeleteRow(ctx, "test_items", "nonexistent")
+	if err != nil {
+		t.Fatalf("DeleteRow() on non-existent should be idempotent, got error = %v", err)
+	}
+}
+
+// --- Seed 2.5: ON CONFLICT preserves FK children ---
+
+func TestGenericUpsertRow_OnConflictPreservesChildren(t *testing.T) {
+	plugin.ResetTableSchemas()
+	defer plugin.ResetTableSchemas()
+
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Create parent and child tables with FK constraint and ON DELETE CASCADE
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS test_parents (
+			id TEXT PRIMARY KEY,
+			name TEXT,
+			updated_at TEXT
+		);
+		CREATE TABLE IF NOT EXISTS test_children (
+			id TEXT PRIMARY KEY,
+			parent_id TEXT NOT NULL,
+			name TEXT,
+			updated_at TEXT,
+			FOREIGN KEY (parent_id) REFERENCES test_parents(id) ON DELETE CASCADE
+		);
+	`)
+	if err != nil {
+		t.Fatalf("create tables: %v", err)
+	}
+
+	plugin.RegisterTableSchemas(plugin.TableSchema{
+		Name:       "test_parents",
+		Columns:    []string{"id", "name", "updated_at"},
+		SoftDelete: false,
+	})
+	plugin.RegisterTableSchemas(plugin.TableSchema{
+		Name:       "test_children",
+		Columns:    []string{"id", "parent_id", "name", "updated_at"},
+		SoftDelete: false,
+	})
+
+	// Insert parent
+	if err := s.UpsertRow(ctx, "test_parents", "p1", []byte(`{"id":"p1","name":"Parent"}`)); err != nil {
+		t.Fatalf("UpsertRow parent: %v", err)
+	}
+
+	// Insert child referencing parent
+	if err := s.UpsertRow(ctx, "test_children", "c1", []byte(`{"id":"c1","parent_id":"p1","name":"Child"}`)); err != nil {
+		t.Fatalf("UpsertRow child: %v", err)
+	}
+
+	// Upsert parent with updated name (should NOT cascade-delete child)
+	if err := s.UpsertRow(ctx, "test_parents", "p1", []byte(`{"id":"p1","name":"Updated Parent"}`)); err != nil {
+		t.Fatalf("UpsertRow parent update: %v", err)
+	}
+
+	// Verify child still exists
+	var childName string
+	err = s.db.QueryRowContext(ctx, "SELECT name FROM test_children WHERE id = ?", "c1").Scan(&childName)
+	if err != nil {
+		t.Fatalf("query child: %v (child was cascade-deleted by upsert!)", err)
+	}
+	if childName != "Child" {
+		t.Errorf("child name = %q, want %q", childName, "Child")
+	}
+
+	// Verify parent was updated
+	var parentName string
+	err = s.db.QueryRowContext(ctx, "SELECT name FROM test_parents WHERE id = ?", "p1").Scan(&parentName)
+	if err != nil {
+		t.Fatalf("query parent: %v", err)
+	}
+	if parentName != "Updated Parent" {
+		t.Errorf("parent name = %q, want %q", parentName, "Updated Parent")
+	}
+}
+
+// --- Seed 2.6: Transaction-scoped generic replay ---
+
+func TestUpsertRowTx_GenericPath(t *testing.T) {
+	s := newGenericReplayTestStore(t)
+	ctx := context.Background()
+
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	payload := []byte(`{"id":"item-1","name":"Tx Item","status":"active"}`)
+	if err := UpsertRowTx(ctx, tx, "test_items", "item-1", payload); err != nil {
+		t.Fatalf("UpsertRowTx() error = %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	var name string
+	err = s.db.QueryRowContext(ctx, "SELECT name FROM test_items WHERE id = ?", "item-1").Scan(&name)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if name != "Tx Item" {
+		t.Errorf("name = %q, want %q", name, "Tx Item")
+	}
+}
+
+func TestDeleteRowTx_GenericPath(t *testing.T) {
+	plugin.ResetTableSchemas()
+	defer plugin.ResetTableSchemas()
+
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Create table with soft delete
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS test_soft_tx (
+			id TEXT PRIMARY KEY,
+			name TEXT,
+			updated_at TEXT,
+			deleted_at TEXT
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	plugin.RegisterTableSchemas(plugin.TableSchema{
+		Name:       "test_soft_tx",
+		Columns:    []string{"id", "name", "updated_at", "deleted_at"},
+		SoftDelete: true,
+	})
+
+	// Insert row
+	if err := s.UpsertRow(ctx, "test_soft_tx", "s1", []byte(`{"id":"s1","name":"Test"}`)); err != nil {
+		t.Fatalf("UpsertRow() error = %v", err)
+	}
+
+	// Delete via transaction
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	if err := DeleteRowTx(ctx, tx, "test_soft_tx", "s1"); err != nil {
+		t.Fatalf("DeleteRowTx() error = %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	// Verify soft deleted
+	var deletedAt sql.NullString
+	err = s.db.QueryRowContext(ctx, "SELECT deleted_at FROM test_soft_tx WHERE id = ?", "s1").Scan(&deletedAt)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !deletedAt.Valid {
+		t.Error("deleted_at should be set")
+	}
+}
+
+// --- Seed 2.7: Backward compatibility verification ---
+
+func TestExistingLoreEntries_StillWork(t *testing.T) {
+	s := newReplayTestStore(t)
+	ctx := context.Background()
+
+	// Verify lore_entries upsert still uses hardcoded path
+	payload := makeLorePayload(t, nil)
+	if err := s.UpsertRow(ctx, "lore_entries", "entry-1", payload); err != nil {
+		t.Fatalf("UpsertRow(lore_entries) error = %v", err)
+	}
+
+	entry, err := s.GetLore(ctx, "entry-1")
+	if err != nil {
+		t.Fatalf("GetLore() error = %v", err)
+	}
+	if entry.Content != "Test lore content" {
+		t.Errorf("Content = %q, want %q", entry.Content, "Test lore content")
+	}
+	if entry.EmbeddingStatus != "pending" {
+		t.Errorf("EmbeddingStatus = %q, want %q (should default to pending)", entry.EmbeddingStatus, "pending")
+	}
+
+	// Verify lore_entries delete still uses hardcoded path
+	if err := s.DeleteRow(ctx, "lore_entries", "entry-1"); err != nil {
+		t.Fatalf("DeleteRow(lore_entries) error = %v", err)
+	}
+
+	_, err = s.GetLore(ctx, "entry-1")
+	if err == nil {
+		t.Error("expected error for soft-deleted entry")
+	}
+
+	// Verify lore_entries is NOT in the schema registry
+	_, ok := plugin.GetTableSchema("lore_entries")
+	if ok {
+		t.Error("lore_entries should NOT be in schema registry")
 	}
 }

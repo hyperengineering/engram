@@ -6,6 +6,22 @@ import (
 	"github.com/hyperengineering/engram/internal/sync"
 )
 
+// TableSchema declares the structure of a domain table for replay operations.
+// The replay layer uses this to build parameterized SQL at runtime.
+type TableSchema struct {
+	// Name is the SQL table name (must match migration CREATE TABLE).
+	Name string
+
+	// Columns lists the column names in the order they appear in the table.
+	// Must include "id" as the primary key column.
+	// The replay layer uses these to build INSERT and UPDATE SQL.
+	Columns []string
+
+	// SoftDelete indicates whether DeleteRow should SET deleted_at
+	// (soft delete) or issue a real DELETE FROM (hard delete).
+	SoftDelete bool
+}
+
 // DomainPlugin provides type-specific behavior for a store.
 // Each store type (recall, tract, generic) has a corresponding plugin
 // that handles validation, migrations, and replay side effects.
@@ -35,6 +51,11 @@ type DomainPlugin interface {
 	// The store parameter provides access to replay-specific operations.
 	// Errors are logged but do not fail the sync operation.
 	OnReplay(ctx context.Context, store ReplayStore, entries []sync.ChangeLogEntry) error
+
+	// TableSchemas returns the schemas of domain tables this plugin manages.
+	// Used by the replay layer to build parameterized SQL for UpsertRow/DeleteRow.
+	// Return nil for plugins that use only the base schema's lore_entries table.
+	TableSchemas() []TableSchema
 }
 
 // Migration represents a domain-specific SQL migration.

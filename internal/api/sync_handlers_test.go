@@ -16,6 +16,7 @@ import (
 	"github.com/hyperengineering/engram/internal/multistore"
 	"github.com/hyperengineering/engram/internal/plugin"
 	"github.com/hyperengineering/engram/internal/plugin/recall"
+	"github.com/hyperengineering/engram/internal/plugin/tract"
 	"github.com/hyperengineering/engram/internal/snapshot"
 	"github.com/hyperengineering/engram/internal/store"
 	engramsync "github.com/hyperengineering/engram/internal/sync"
@@ -1588,5 +1589,426 @@ func TestSyncSnapshot_NilUploaderUsesLocalStreaming(t *testing.T) {
 
 	if !bytes.Equal(w.Body.Bytes(), testData) {
 		t.Errorf("body = %q, want %q", w.Body.String(), string(testData))
+	}
+}
+
+// --- Tract Integration Tests ---
+
+// setupTractTestEnv creates a tract-typed store with plugin migrations applied.
+func setupTractTestEnv(t *testing.T) (*multistore.StoreManager, *Handler, *multistore.ManagedStore) {
+	t.Helper()
+
+	// Register tract plugin (idempotent, may already be registered)
+	func() {
+		defer func() { recover() }()
+		plugin.Register(tract.New())
+	}()
+
+	manager, _ := setupStoreManager(t)
+
+	ctx := context.Background()
+	managed, err := manager.CreateStore(ctx, "tract-store", "tract", "Tract test store")
+	if err != nil {
+		t.Fatalf("CreateStore() error = %v", err)
+	}
+
+	// Set schema version to 1
+	if err := managed.Store.SetSyncMeta(ctx, "schema_version", "1"); err != nil {
+		t.Fatalf("SetSyncMeta() error = %v", err)
+	}
+
+	defaultStore := &mockStore{stats: &types.StoreStats{}}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
+
+	return manager, handler, managed
+}
+
+func validGoalPayload(t *testing.T, id string, parentGoalID *string) json.RawMessage {
+	t.Helper()
+	payload := map[string]interface{}{
+		"id":             id,
+		"title":          "Goal " + id,
+		"description":    "Test goal description",
+		"status":         "active",
+		"priority":       1,
+		"parent_goal_id": parentGoalID,
+		"created_at":     "2026-01-01T00:00:00Z",
+		"updated_at":     "2026-01-01T00:00:00Z",
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal goal payload: %v", err)
+	}
+	return json.RawMessage(b)
+}
+
+func validCSFPayload(t *testing.T, id, goalID string) json.RawMessage {
+	t.Helper()
+	payload := map[string]interface{}{
+		"id":          id,
+		"goal_id":     goalID,
+		"title":       "CSF " + id,
+		"description": "Test CSF",
+		"status":      "tracking",
+		"created_at":  "2026-01-01T00:00:00Z",
+		"updated_at":  "2026-01-01T00:00:00Z",
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal csf payload: %v", err)
+	}
+	return json.RawMessage(b)
+}
+
+func validFWUPayload(t *testing.T, id, csfID string) json.RawMessage {
+	t.Helper()
+	payload := map[string]interface{}{
+		"id":         id,
+		"csf_id":     csfID,
+		"title":      "FWU " + id,
+		"priority":   0,
+		"status":     "planned",
+		"created_at": "2026-01-01T00:00:00Z",
+		"updated_at": "2026-01-01T00:00:00Z",
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal fwu payload: %v", err)
+	}
+	return json.RawMessage(b)
+}
+
+func validICPayload(t *testing.T, id, fwuID string) json.RawMessage {
+	t.Helper()
+	payload := map[string]interface{}{
+		"id":         id,
+		"fwu_id":     fwuID,
+		"content":    "Test implementation context",
+		"created_at": "2026-01-01T00:00:00Z",
+		"updated_at": "2026-01-01T00:00:00Z",
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal ic payload: %v", err)
+	}
+	return json.RawMessage(b)
+}
+
+// tractDB returns the underlying *sql.DB from a managed store via type assertion.
+func tractDB(t *testing.T, managed *multistore.ManagedStore) *store.SQLiteStore {
+	t.Helper()
+	sqliteStore, ok := managed.Store.(*store.SQLiteStore)
+	if !ok {
+		t.Fatalf("managed store is not *store.SQLiteStore, got %T", managed.Store)
+	}
+	return sqliteStore
+}
+
+// Seed 8.2: Push a goal through the API to a Tract-typed store
+func TestTractIntegration_PushGoal(t *testing.T) {
+	manager, handler, managed := setupTractTestEnv(t)
+	defer manager.Close()
+	router := NewRouter(handler, manager)
+
+	goalID := "goal-001"
+	req := engramsync.PushRequest{
+		PushID:        "tract-push-goal",
+		SourceID:      "client-1",
+		SchemaVersion: 1,
+		Entries: []engramsync.ChangeLogEntry{
+			{
+				TableName: "goals",
+				EntityID:  goalID,
+				Operation: "upsert",
+				Payload:   validGoalPayload(t, goalID, nil),
+			},
+		},
+	}
+
+	httpReq := httptest.NewRequest(http.MethodPost, "/api/v1/stores/tract-store/sync/push", makePushBody(t, req))
+	httpReq.Header.Set("Authorization", "Bearer test-api-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp engramsync.PushResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Accepted != 1 {
+		t.Errorf("expected accepted=1, got %d", resp.Accepted)
+	}
+	if resp.RemoteSequence <= 0 {
+		t.Errorf("expected remote_sequence > 0, got %d", resp.RemoteSequence)
+	}
+
+	// Verify the goal appears in the goals table
+	sqliteStore := tractDB(t, managed)
+	db := sqliteStore.DB()
+
+	var title, status string
+	err := db.QueryRow("SELECT title, status FROM goals WHERE id = ?", goalID).Scan(&title, &status)
+	if err != nil {
+		t.Fatalf("query goals table: %v", err)
+	}
+	if title != "Goal "+goalID {
+		t.Errorf("title = %q, want %q", title, "Goal "+goalID)
+	}
+	if status != "active" {
+		t.Errorf("status = %q, want %q", status, "active")
+	}
+
+	// Verify the change_log has the entry with correct table_name
+	ctx := context.Background()
+	entries, err := managed.Store.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 change log entry, got %d", len(entries))
+	}
+	if entries[0].TableName != "goals" {
+		t.Errorf("change log table_name = %q, want %q", entries[0].TableName, "goals")
+	}
+	if entries[0].EntityID != goalID {
+		t.Errorf("change log entity_id = %q, want %q", entries[0].EntityID, goalID)
+	}
+}
+
+// Seed 8.3: Full graph push with all 4 tables in wrong FK order
+func TestTractIntegration_FullGraphPush(t *testing.T) {
+	manager, handler, managed := setupTractTestEnv(t)
+	defer manager.Close()
+	router := NewRouter(handler, manager)
+
+	goalID := "goal-100"
+	csfID := "csf-100"
+	fwuID := "fwu-100"
+	icID := "ic-100"
+
+	// Deliberately send entries in WRONG FK order:
+	// IC -> FWU -> CSF -> Goal (leaf-first instead of root-first)
+	req := engramsync.PushRequest{
+		PushID:        "tract-full-graph-push",
+		SourceID:      "client-1",
+		SchemaVersion: 1,
+		Entries: []engramsync.ChangeLogEntry{
+			{
+				TableName: "implementation_contexts",
+				EntityID:  icID,
+				Operation: "upsert",
+				Payload:   validICPayload(t, icID, fwuID),
+			},
+			{
+				TableName: "fwus",
+				EntityID:  fwuID,
+				Operation: "upsert",
+				Payload:   validFWUPayload(t, fwuID, csfID),
+			},
+			{
+				TableName: "csfs",
+				EntityID:  csfID,
+				Operation: "upsert",
+				Payload:   validCSFPayload(t, csfID, goalID),
+			},
+			{
+				TableName: "goals",
+				EntityID:  goalID,
+				Operation: "upsert",
+				Payload:   validGoalPayload(t, goalID, nil),
+			},
+		},
+	}
+
+	httpReq := httptest.NewRequest(http.MethodPost, "/api/v1/stores/tract-store/sync/push", makePushBody(t, req))
+	httpReq.Header.Set("Authorization", "Bearer test-api-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp engramsync.PushResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Accepted != 4 {
+		t.Errorf("expected accepted=4, got %d", resp.Accepted)
+	}
+
+	// Verify all entries appear in their correct domain tables
+	sqliteStore := tractDB(t, managed)
+	db := sqliteStore.DB()
+
+	// Check goals
+	var goalTitle string
+	if err := db.QueryRow("SELECT title FROM goals WHERE id = ?", goalID).Scan(&goalTitle); err != nil {
+		t.Fatalf("query goals: %v", err)
+	}
+	if goalTitle != "Goal "+goalID {
+		t.Errorf("goal title = %q, want %q", goalTitle, "Goal "+goalID)
+	}
+
+	// Check csfs
+	var csfGoalID string
+	if err := db.QueryRow("SELECT goal_id FROM csfs WHERE id = ?", csfID).Scan(&csfGoalID); err != nil {
+		t.Fatalf("query csfs: %v", err)
+	}
+	if csfGoalID != goalID {
+		t.Errorf("csf goal_id = %q, want %q", csfGoalID, goalID)
+	}
+
+	// Check fwus
+	var fwuCSFID string
+	if err := db.QueryRow("SELECT csf_id FROM fwus WHERE id = ?", fwuID).Scan(&fwuCSFID); err != nil {
+		t.Fatalf("query fwus: %v", err)
+	}
+	if fwuCSFID != csfID {
+		t.Errorf("fwu csf_id = %q, want %q", fwuCSFID, csfID)
+	}
+
+	// Check implementation_contexts
+	var icFWUID string
+	if err := db.QueryRow("SELECT fwu_id FROM implementation_contexts WHERE id = ?", icID).Scan(&icFWUID); err != nil {
+		t.Fatalf("query implementation_contexts: %v", err)
+	}
+	if icFWUID != fwuID {
+		t.Errorf("ic fwu_id = %q, want %q", icFWUID, fwuID)
+	}
+
+	// Verify change_log entries follow FK order (goals before csfs before fwus before ICs)
+	ctx := context.Background()
+	changeLog, err := managed.Store.GetChangeLogAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("GetChangeLogAfter() error = %v", err)
+	}
+	if len(changeLog) != 4 {
+		t.Fatalf("expected 4 change log entries, got %d", len(changeLog))
+	}
+
+	expectedOrder := []string{"goals", "csfs", "fwus", "implementation_contexts"}
+	for i, expected := range expectedOrder {
+		if changeLog[i].TableName != expected {
+			t.Errorf("change log[%d] table_name = %q, want %q", i, changeLog[i].TableName, expected)
+		}
+	}
+}
+
+// Seed 8.4: Mixed deletes and upserts with pre-populated data
+func TestTractIntegration_MixedDeletesAndUpserts(t *testing.T) {
+	manager, handler, managed := setupTractTestEnv(t)
+	defer manager.Close()
+	router := NewRouter(handler, manager)
+
+	// Step 1: Pre-populate with a full graph
+	goalID := "goal-200"
+	csfID := "csf-200"
+	fwuID := "fwu-200"
+	icID := "ic-200"
+
+	setupReq := engramsync.PushRequest{
+		PushID:        "tract-setup-push",
+		SourceID:      "client-1",
+		SchemaVersion: 1,
+		Entries: []engramsync.ChangeLogEntry{
+			{TableName: "goals", EntityID: goalID, Operation: "upsert", Payload: validGoalPayload(t, goalID, nil)},
+			{TableName: "csfs", EntityID: csfID, Operation: "upsert", Payload: validCSFPayload(t, csfID, goalID)},
+			{TableName: "fwus", EntityID: fwuID, Operation: "upsert", Payload: validFWUPayload(t, fwuID, csfID)},
+			{TableName: "implementation_contexts", EntityID: icID, Operation: "upsert", Payload: validICPayload(t, icID, fwuID)},
+		},
+	}
+
+	httpReq := httptest.NewRequest(http.MethodPost, "/api/v1/stores/tract-store/sync/push", makePushBody(t, setupReq))
+	httpReq.Header.Set("Authorization", "Bearer test-api-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httpReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("setup push failed: %d: %s", w.Code, w.Body.String())
+	}
+
+	// Step 2: Push mixed deletes and upserts
+	// Delete the IC, add a new goal and CSF
+	newGoalID := "goal-201"
+	newCSFID := "csf-201"
+
+	mixedReq := engramsync.PushRequest{
+		PushID:        "tract-mixed-push",
+		SourceID:      "client-1",
+		SchemaVersion: 1,
+		Entries: []engramsync.ChangeLogEntry{
+			// New upserts
+			{TableName: "goals", EntityID: newGoalID, Operation: "upsert", Payload: validGoalPayload(t, newGoalID, nil)},
+			{TableName: "csfs", EntityID: newCSFID, Operation: "upsert", Payload: validCSFPayload(t, newCSFID, newGoalID)},
+			// Delete existing IC
+			{TableName: "implementation_contexts", EntityID: icID, Operation: "delete"},
+		},
+	}
+
+	httpReq = httptest.NewRequest(http.MethodPost, "/api/v1/stores/tract-store/sync/push", makePushBody(t, mixedReq))
+	httpReq.Header.Set("Authorization", "Bearer test-api-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("mixed push failed: %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp engramsync.PushResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Accepted != 3 {
+		t.Errorf("expected accepted=3, got %d", resp.Accepted)
+	}
+
+	// Verify the IC was soft-deleted (deleted_at set)
+	sqliteStore := tractDB(t, managed)
+	db := sqliteStore.DB()
+
+	var deletedAt *string
+	err := db.QueryRow("SELECT deleted_at FROM implementation_contexts WHERE id = ?", icID).Scan(&deletedAt)
+	if err != nil {
+		t.Fatalf("query IC deleted_at: %v", err)
+	}
+	if deletedAt == nil || *deletedAt == "" {
+		t.Error("expected IC deleted_at to be set, got nil or empty")
+	}
+
+	// Verify new goal was created
+	var newGoalTitle string
+	err = db.QueryRow("SELECT title FROM goals WHERE id = ? AND deleted_at IS NULL", newGoalID).Scan(&newGoalTitle)
+	if err != nil {
+		t.Fatalf("query new goal: %v", err)
+	}
+	if newGoalTitle != "Goal "+newGoalID {
+		t.Errorf("new goal title = %q, want %q", newGoalTitle, "Goal "+newGoalID)
+	}
+
+	// Verify new CSF was created
+	var newCSFTitle string
+	err = db.QueryRow("SELECT title FROM csfs WHERE id = ? AND deleted_at IS NULL", newCSFID).Scan(&newCSFTitle)
+	if err != nil {
+		t.Fatalf("query new csf: %v", err)
+	}
+	if newCSFTitle != "CSF "+newCSFID {
+		t.Errorf("new csf title = %q, want %q", newCSFTitle, "CSF "+newCSFID)
+	}
+
+	// Verify original entities are still intact (not deleted)
+	var origGoalTitle string
+	err = db.QueryRow("SELECT title FROM goals WHERE id = ? AND deleted_at IS NULL", goalID).Scan(&origGoalTitle)
+	if err != nil {
+		t.Fatalf("original goal should still exist: %v", err)
 	}
 }
