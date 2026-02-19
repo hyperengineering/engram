@@ -213,8 +213,17 @@ nfpms:
         type: config|noreplace
       - src: packaging/engram.service
         dst: /usr/lib/systemd/system/engram.service
+      - src: packaging/logrotate
+        dst: /etc/logrotate.d/engram
       # Data directory (owned by engram user)
       - dst: /var/lib/engram
+        type: dir
+        file_info:
+          owner: engram
+          group: engram
+          mode: 0750
+      # Log directory (owned by engram user)
+      - dst: /var/log/engram
         type: dir
         file_info:
           owner: engram

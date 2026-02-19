@@ -21,5 +21,10 @@ mkdir -p /var/lib/engram
 chown engram:engram /var/lib/engram
 chmod 750 /var/lib/engram
 
+# Create log directory
+mkdir -p /var/log/engram
+chown engram:engram /var/log/engram
+chmod 750 /var/log/engram
+
 # Create config directory
 mkdir -p /etc/engram

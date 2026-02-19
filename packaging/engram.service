@@ -13,14 +13,14 @@ ExecStart=/usr/bin/engram
 WorkingDirectory=/var/lib/engram
 Restart=on-failure
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
+StandardOutput=append:/var/log/engram/engram.log
+StandardError=append:/var/log/engram/engram.log
 
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/engram
+ReadWritePaths=/var/lib/engram /var/log/engram
 PrivateTmp=yes
 CapabilityBoundingSet=
 ProtectKernelTunables=yes
