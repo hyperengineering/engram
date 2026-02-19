@@ -225,6 +225,17 @@ nfpms:
         dependencies:
           - systemd
 
+# Publish deb/rpm to Gemfury
+publishers:
+  - name: fury.io
+    ids:
+      - packages
+    cmd: >-
+      curl -sf -F p1=@{{ .ArtifactPath }}
+      https://{{ .Env.FURY_PUSH_TOKEN }}@push.fury.io/hyperengineering/
+    extra_files:
+      - glob: ""
+
 release:
   github:
     owner: hyperengineering
