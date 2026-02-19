@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -108,7 +109,11 @@ func NewUploader(cfg config.SnapshotStorageConfig) (Uploader, error) {
 		useSSL = *cfg.UseSSL
 	}
 
-	client, err := minio.New(cfg.Endpoint, &minio.Options{
+	// Strip scheme from endpoint — minio-go expects host[:port] only
+	// and derives the scheme from the Secure option.
+	endpoint := stripScheme(cfg.Endpoint, &useSSL)
+
+	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: useSSL,
 		Region: cfg.Region,
@@ -128,4 +133,20 @@ func NewUploader(cfg config.SnapshotStorageConfig) (Uploader, error) {
 // Convention: {store_id}/snapshot/current.db
 func objectKey(storeID string) string {
 	return storeID + "/snapshot/current.db"
+}
+
+// stripScheme removes a URL scheme from the endpoint and infers the SSL
+// setting when the operator hasn't explicitly set UseSSL. This lets operators
+// write ENGRAM_S3_ENDPOINT=https://s3.example.com instead of requiring the
+// bare host form that minio-go expects.
+func stripScheme(endpoint string, useSSL *bool) string {
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		if strings.EqualFold(u.Scheme, "http") {
+			*useSSL = false
+		} else if strings.EqualFold(u.Scheme, "https") {
+			*useSSL = true
+		}
+		return u.Host // includes port if present
+	}
+	return endpoint
 }

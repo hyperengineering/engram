@@ -1,28 +1,30 @@
 # Engram Environment Variables
 # This file contains sensitive configuration that should not be in the main config file.
 # Permissions: root:engram 640 (set by postinstall script)
+#
+# Format: KEY=VALUE (no 'export' — systemd EnvironmentFile requires plain assignments)
 
 # Required: API key for authenticating clients
 # Generate a secure random key: openssl rand -hex 32
-export ENGRAM_API_KEY=
+ENGRAM_API_KEY=
 
 # Required: OpenAI API key for embedding generation
 # Get your key from: https://platform.openai.com/api-keys
-export OPENAI_API_KEY=
+OPENAI_API_KEY=
 
 # Configuration file path (set by default for system packages)
-export ENGRAM_CONFIG_PATH=/etc/engram/engram.yaml
+ENGRAM_CONFIG_PATH=/etc/engram/engram.yaml
 
 # Optional: Override log level (debug, info, warn, error)
-# export ENGRAM_LOG_LEVEL=info
+# ENGRAM_LOG_LEVEL=info
 
 # Optional: Override log format (json, text)
-# export ENGRAM_LOG_FORMAT=json
+# ENGRAM_LOG_FORMAT=json
 
 # Optional: S3-compatible storage for snapshot distribution
 # When set, snapshots are uploaded for client bootstrap downloads.
 # Compatible with AWS S3, MinIO, Cloudflare R2, etc.
-# export ENGRAM_SNAPSHOT_BUCKET=
-# export ENGRAM_S3_ENDPOINT=
-# export ENGRAM_S3_ACCESS_KEY=
-# export ENGRAM_S3_SECRET_KEY=
+# ENGRAM_SNAPSHOT_BUCKET=
+# ENGRAM_S3_ENDPOINT=
+# ENGRAM_S3_ACCESS_KEY=
+# ENGRAM_S3_SECRET_KEY=

@@ -235,6 +235,35 @@ func TestS3Uploader_PresignedURL_Error(t *testing.T) {
 	}
 }
 
+func TestStripScheme(t *testing.T) {
+	tests := []struct {
+		name       string
+		endpoint   string
+		wantHost   string
+		wantSSL    bool
+	}{
+		{"bare host", "s3.example.com", "s3.example.com", true},
+		{"bare host:port", "minio:9000", "minio:9000", true},
+		{"https URL", "https://s3.example.com", "s3.example.com", true},
+		{"http URL", "http://minio:9000", "minio:9000", false},
+		{"https with port", "https://s3.example.com:443", "s3.example.com:443", true},
+		{"http with port", "http://localhost:9000", "localhost:9000", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ssl := true
+			got := stripScheme(tt.endpoint, &ssl)
+			if got != tt.wantHost {
+				t.Errorf("stripScheme(%q) host = %q, want %q", tt.endpoint, got, tt.wantHost)
+			}
+			if ssl != tt.wantSSL {
+				t.Errorf("stripScheme(%q) ssl = %v, want %v", tt.endpoint, ssl, tt.wantSSL)
+			}
+		})
+	}
+}
+
 func TestS3Uploader_ObjectKey_Format(t *testing.T) {
 	// Verify the key convention: {store_id}/snapshot/current.db
 	tests := []struct {
