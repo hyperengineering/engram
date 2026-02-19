@@ -390,6 +390,28 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+// LoadStoresConfig loads only the configuration needed for store management.
+// Unlike Load(), this does NOT validate API keys, making it suitable for
+// CLI commands that operate directly on the filesystem.
+func LoadStoresConfig() (*StoresConfig, error) {
+	cfg := newDefaults()
+
+	// Determine config path
+	configPath := getEnv("ENGRAM_CONFIG_PATH", "config/engram.yaml")
+
+	// Load YAML file if it exists (missing file is not an error)
+	if err := loadYAMLFile(cfg, configPath); err != nil {
+		return nil, err
+	}
+
+	// Apply store-specific env override
+	if v := os.Getenv("ENGRAM_STORES_ROOT"); v != "" {
+		cfg.Stores.RootPath = v
+	}
+
+	return &cfg.Stores, nil
+}
+
 // getEnv returns the value of an environment variable or a default.
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

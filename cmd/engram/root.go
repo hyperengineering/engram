@@ -48,6 +48,7 @@ var versionCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(storeCmd)
 }
 
 func run(cmd *cobra.Command, args []string) error {
