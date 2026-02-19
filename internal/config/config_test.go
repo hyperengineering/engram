@@ -945,3 +945,41 @@ snapshot_storage:
 		t.Error("UseSSL should default to true when not set in YAML")
 	}
 }
+
+// Test: ENGRAM_S3_USE_SSL accepts "1" as truthy (consistent with ENGRAM_DEDUPLICATION_ENABLED)
+func TestConfig_SnapshotStorage_UseSSL_EnvValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		want     bool
+	}{
+		{"true_string", "true", true},
+		{"one_string", "1", true},
+		{"false_string", "false", false},
+		{"zero_string", "0", false},
+		{"empty_keeps_default", "", true}, // empty env does not override default
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			setDevModeEnv(t)
+
+			if tt.envValue != "" {
+				os.Setenv("ENGRAM_S3_USE_SSL", tt.envValue)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+
+			if cfg.SnapshotStorage.UseSSL == nil {
+				t.Fatal("UseSSL should not be nil")
+			}
+			if *cfg.SnapshotStorage.UseSSL != tt.want {
+				t.Errorf("UseSSL = %v, want %v (env=%q)", *cfg.SnapshotStorage.UseSSL, tt.want, tt.envValue)
+			}
+		})
+	}
+}

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/hyperengineering/engram/internal/plugin"
-	"github.com/hyperengineering/engram/internal/snapshot"
 	"github.com/hyperengineering/engram/internal/store"
 	engramsync "github.com/hyperengineering/engram/internal/sync"
 )
@@ -379,27 +378,8 @@ func (h *Handler) SyncSnapshot(w http.ResponseWriter, r *http.Request) {
 	storeID := StoreIDFromContext(ctx)
 
 	// Try pre-signed URL redirect if uploader is configured
-	if h.uploader != nil {
-		presignedURL, _, err := h.uploader.PresignedURL(ctx, storeID)
-		if err == nil {
-			slog.Info("sync snapshot served via S3 redirect",
-				"component", "api",
-				"action", "sync_snapshot_redirect",
-				"store_id", storeID,
-				"remote_addr", r.RemoteAddr,
-				"duration_ms", time.Since(start).Milliseconds(),
-			)
-			http.Redirect(w, r, presignedURL, http.StatusFound)
-			return
-		}
-		// Fall through to local streaming on any error (including ErrNotConfigured)
-		if !errors.Is(err, snapshot.ErrNotConfigured) {
-			slog.Warn("pre-signed URL generation failed, falling back to local streaming",
-				"component", "api",
-				"store_id", storeID,
-				"error", err,
-			)
-		}
+	if h.trySnapshotRedirect(w, r, storeID) {
+		return
 	}
 
 	// Get store

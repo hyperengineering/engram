@@ -358,7 +358,7 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.SnapshotStorage.SecretKey = v
 	}
 	if v := os.Getenv("ENGRAM_S3_USE_SSL"); v != "" {
-		b := v == "true"
+		b := v == "true" || v == "1"
 		cfg.SnapshotStorage.UseSSL = &b
 	}
 	if v := os.Getenv("ENGRAM_S3_URL_EXPIRY"); v != "" {
