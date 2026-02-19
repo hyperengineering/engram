@@ -15,6 +15,7 @@ import (
 	"github.com/hyperengineering/engram/internal/config"
 	"github.com/hyperengineering/engram/internal/embedding"
 	"github.com/hyperengineering/engram/internal/multistore"
+	"github.com/hyperengineering/engram/internal/snapshot"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/worker"
 	"github.com/spf13/cobra"
@@ -97,8 +98,21 @@ func run(cmd *cobra.Command, args []string) error {
 	defer storeManager.Close()
 	slog.Info("store manager initialized", "root_path", cfg.Stores.RootPath)
 
-	// 8. Initialize HTTP router
-	handler := api.NewHandler(db, storeManager, embedder, cfg.Auth.APIKey, Version)
+	// 8. Initialize snapshot uploader (S3-compatible storage)
+	uploader, err := snapshot.NewUploader(cfg.SnapshotStorage)
+	if err != nil {
+		return fmt.Errorf("initialize snapshot uploader: %w", err)
+	}
+	if cfg.SnapshotStorage.Bucket != "" {
+		slog.Info("snapshot S3 upload enabled",
+			"bucket", cfg.SnapshotStorage.Bucket,
+			"region", cfg.SnapshotStorage.Region,
+			"endpoint", cfg.SnapshotStorage.Endpoint,
+		)
+	}
+
+	// 9. Initialize HTTP router
+	handler := api.NewHandler(db, storeManager, embedder, uploader, cfg.Auth.APIKey, Version)
 	router := api.NewRouter(handler, storeManager)
 	slog.Info("router initialized")
 
@@ -133,6 +147,7 @@ func run(cmd *cobra.Command, args []string) error {
 	snapshotCoordinator := worker.NewSnapshotCoordinator(
 		storeAdapter,
 		time.Duration(cfg.Worker.SnapshotInterval),
+		uploader,
 	)
 	startWorker(ctx, &wg, "snapshot-coordinator", snapshotCoordinator.Run)
 

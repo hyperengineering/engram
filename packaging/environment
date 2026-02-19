@@ -18,3 +18,11 @@ export ENGRAM_CONFIG_PATH=/etc/engram/engram.yaml
 
 # Optional: Override log format (json, text)
 # export ENGRAM_LOG_FORMAT=json
+
+# Optional: S3-compatible storage for snapshot distribution
+# When set, snapshots are uploaded for client bootstrap downloads.
+# Compatible with AWS S3, MinIO, Cloudflare R2, etc.
+# export ENGRAM_SNAPSHOT_BUCKET=
+# export ENGRAM_S3_ENDPOINT=
+# export ENGRAM_S3_ACCESS_KEY=
+# export ENGRAM_S3_SECRET_KEY=

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hyperengineering/engram/internal/multistore"
+	"github.com/hyperengineering/engram/internal/snapshot"
 )
 
 // StoreEnumerator provides access to all managed stores.
@@ -18,6 +19,7 @@ type StoreEnumerator interface {
 // SnapshotCapableStore represents a store that can generate snapshots.
 type SnapshotCapableStore interface {
 	GenerateSnapshot(ctx context.Context) error
+	GetSnapshotPath(ctx context.Context) (string, error)
 }
 
 // StoreManagerAdapter adapts multistore.StoreManager to StoreEnumerator.
@@ -47,17 +49,21 @@ func (a *StoreManagerAdapter) GetStore(ctx context.Context, storeID string) (Sna
 // SnapshotCoordinator generates snapshots for all managed stores.
 type SnapshotCoordinator struct {
 	manager  StoreEnumerator
+	uploader snapshot.Uploader
 	interval time.Duration
 }
 
 // NewSnapshotCoordinator creates a coordinator that generates snapshots
 // for all stores managed by the given StoreEnumerator.
+// The uploader parameter is optional; if nil, no S3 upload is attempted.
 func NewSnapshotCoordinator(
 	manager StoreEnumerator,
 	interval time.Duration,
+	uploader snapshot.Uploader,
 ) *SnapshotCoordinator {
 	return &SnapshotCoordinator{
 		manager:  manager,
+		uploader: uploader,
 		interval: interval,
 	}
 }
@@ -165,5 +171,45 @@ func (c *SnapshotCoordinator) generateStoreSnapshot(ctx context.Context, storeID
 		)
 		return false
 	}
+
+	// Upload to S3 if configured (non-fatal on failure)
+	if c.uploader != nil {
+		c.uploadSnapshot(ctx, store, storeID)
+	}
+
 	return true
+}
+
+// uploadSnapshot uploads the generated snapshot to S3.
+// Upload failures are logged as warnings but are NOT fatal — local snapshot remains valid.
+func (c *SnapshotCoordinator) uploadSnapshot(ctx context.Context, store SnapshotCapableStore, storeID string) {
+	path, err := store.GetSnapshotPath(ctx)
+	if err != nil {
+		slog.Warn("failed to get snapshot path for upload",
+			"component", "worker",
+			"worker", "snapshot-coordinator",
+			"action", "snapshot_upload_failed",
+			"store_id", storeID,
+			"error", err,
+		)
+		return
+	}
+
+	if err := c.uploader.Upload(ctx, storeID, path); err != nil {
+		slog.Warn("snapshot upload to S3 failed",
+			"component", "worker",
+			"worker", "snapshot-coordinator",
+			"action", "snapshot_upload_failed",
+			"store_id", storeID,
+			"error", err,
+		)
+		return
+	}
+
+	slog.Info("snapshot uploaded to S3",
+		"component", "worker",
+		"worker", "snapshot-coordinator",
+		"action", "snapshot_uploaded",
+		"store_id", storeID,
+	)
 }

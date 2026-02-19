@@ -103,11 +103,13 @@ func (m *mockStoreEnumerator) setStoreError(storeID string, err error) {
 
 // mockCoordinatorStore implements snapshot generation for coordinator tests.
 type mockCoordinatorStore struct {
-	mu       sync.Mutex
-	calls    int
-	err      error
-	duration time.Duration
-	called   chan struct{} // Signals when GenerateSnapshot is called
+	mu           sync.Mutex
+	calls        int
+	err          error
+	duration     time.Duration
+	called       chan struct{} // Signals when GenerateSnapshot is called
+	snapshotPath string
+	pathErr      error
 }
 
 func (m *mockCoordinatorStore) GenerateSnapshot(ctx context.Context) error {
@@ -136,6 +138,18 @@ func (m *mockCoordinatorStore) GenerateSnapshot(ctx context.Context) error {
 	return err
 }
 
+func (m *mockCoordinatorStore) GetSnapshotPath(ctx context.Context) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pathErr != nil {
+		return "", m.pathErr
+	}
+	if m.snapshotPath != "" {
+		return m.snapshotPath, nil
+	}
+	return "/tmp/snapshot/current.db", nil
+}
+
 func (m *mockCoordinatorStore) getCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -153,7 +167,7 @@ func (m *mockCoordinatorStore) setError(err error) {
 func TestSnapshotCoordinator_IteratesAllStores(t *testing.T) {
 	enum := newMockStoreEnumerator("default", "project-a", "org/project-b")
 
-	coord := NewSnapshotCoordinator(enum, 1*time.Hour)
+	coord := NewSnapshotCoordinator(enum, 1*time.Hour, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -184,7 +198,7 @@ func TestSnapshotCoordinator_HandlesStoreErrorsGracefully(t *testing.T) {
 	// Make store-b fail
 	enum.setStoreError("store-b", errors.New("disk full"))
 
-	coord := NewSnapshotCoordinator(enum, 1*time.Hour)
+	coord := NewSnapshotCoordinator(enum, 1*time.Hour, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -224,7 +238,7 @@ func TestSnapshotCoordinator_RespectsContextCancellation(t *testing.T) {
 		ms.duration = 100 * time.Millisecond
 	}
 
-	coord := NewSnapshotCoordinator(enum, 1*time.Hour)
+	coord := NewSnapshotCoordinator(enum, 1*time.Hour, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -265,7 +279,7 @@ func TestSnapshotCoordinator_RespectsContextCancellation(t *testing.T) {
 func TestSnapshotCoordinator_GeneratesOnInterval(t *testing.T) {
 	enum := newMockStoreEnumerator("default")
 
-	coord := NewSnapshotCoordinator(enum, 50*time.Millisecond) // Short interval
+	coord := NewSnapshotCoordinator(enum, 50*time.Millisecond, nil) // Short interval
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -293,7 +307,7 @@ func TestSnapshotCoordinator_HandleListStoresError(t *testing.T) {
 	enum := newMockStoreEnumerator("default")
 	enum.listErr = errors.New("failed to read directory")
 
-	coord := NewSnapshotCoordinator(enum, 20*time.Millisecond) // Short interval
+	coord := NewSnapshotCoordinator(enum, 20*time.Millisecond, nil) // Short interval
 
 	// Use a timeout context - if list fails, no stores get processed
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -318,7 +332,7 @@ func TestSnapshotCoordinator_HandleGetStoreError(t *testing.T) {
 	enum := newMockStoreEnumerator("store-a", "store-b")
 	enum.getErr["store-a"] = errors.New("store deleted")
 
-	coord := NewSnapshotCoordinator(enum, 1*time.Hour)
+	coord := NewSnapshotCoordinator(enum, 1*time.Hour, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -556,7 +570,7 @@ func TestStoreManagerAdapter_Integration_CoordinatorGeneratesAllSnapshots(t *tes
 
 	// Create coordinator with adapter
 	adapter := NewStoreManagerAdapter(manager)
-	coord := NewSnapshotCoordinator(adapter, 1*time.Hour)
+	coord := NewSnapshotCoordinator(adapter, 1*time.Hour, nil)
 
 	// Run coordinator briefly to generate initial snapshots
 	runCtx, cancel := context.WithCancel(ctx)
@@ -611,5 +625,143 @@ func waitForSnapshotFiles(paths []string, timeout time.Duration) (bool, []string
 		case <-time.After(10 * time.Millisecond):
 			// Poll again
 		}
+	}
+}
+
+// --- Upload-after-generation tests ---
+
+// mockUploader implements snapshot.Uploader for testing.
+type mockUploader struct {
+	mu          sync.Mutex
+	uploadCalls int
+	uploadErr   error
+	lastStoreID string
+	lastPath    string
+}
+
+func (m *mockUploader) Upload(ctx context.Context, storeID string, filePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.uploadCalls++
+	m.lastStoreID = storeID
+	m.lastPath = filePath
+	return m.uploadErr
+}
+
+func (m *mockUploader) PresignedURL(ctx context.Context, storeID string) (string, time.Time, error) {
+	return "", time.Time{}, nil
+}
+
+func (m *mockUploader) getUploadCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.uploadCalls
+}
+
+func TestSnapshotCoordinator_UploadsAfterGeneration(t *testing.T) {
+	enum := newMockStoreEnumerator("store-a")
+
+	uploader := &mockUploader{}
+	coord := NewSnapshotCoordinator(enum, 1*time.Hour, uploader)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		coord.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for snapshot generation
+	if !enum.waitForCalls(1, 2*time.Second) {
+		t.Fatal("Timed out waiting for snapshot generation")
+	}
+
+	// Wait a bit for upload to complete (upload happens after generation)
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	<-done
+
+	if calls := uploader.getUploadCalls(); calls != 1 {
+		t.Errorf("expected 1 upload call, got %d", calls)
+	}
+}
+
+func TestSnapshotCoordinator_UploadFailureIsNonFatal(t *testing.T) {
+	enum := newMockStoreEnumerator("store-a", "store-b")
+
+	uploader := &mockUploader{uploadErr: errors.New("S3 connection refused")}
+	coord := NewSnapshotCoordinator(enum, 1*time.Hour, uploader)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		coord.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for both stores to generate snapshots
+	if !enum.waitForCalls(2, 2*time.Second) {
+		t.Fatal("Timed out waiting for snapshot generation")
+	}
+	cancel()
+	<-done
+
+	// Both stores should still be processed despite upload failures
+	for _, storeID := range []string{"store-a", "store-b"} {
+		calls := enum.getSnapshotCalls(storeID)
+		if calls < 1 {
+			t.Errorf("Expected at least 1 GenerateSnapshot call for %q, got %d", storeID, calls)
+		}
+	}
+}
+
+func TestSnapshotCoordinator_GenerationFailureSkipsUpload(t *testing.T) {
+	enum := newMockStoreEnumerator("store-a")
+	enum.setStoreError("store-a", errors.New("disk full"))
+
+	uploader := &mockUploader{}
+	coord := NewSnapshotCoordinator(enum, 50*time.Millisecond, uploader)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		coord.Run(ctx)
+		close(done)
+	}()
+
+	<-done
+
+	// Upload should NOT have been called since generation failed
+	if calls := uploader.getUploadCalls(); calls != 0 {
+		t.Errorf("expected 0 upload calls when generation fails, got %d", calls)
+	}
+}
+
+func TestSnapshotCoordinator_NilUploaderSkipsUpload(t *testing.T) {
+	enum := newMockStoreEnumerator("store-a")
+
+	// nil uploader = no S3 configured
+	coord := NewSnapshotCoordinator(enum, 1*time.Hour, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		coord.Run(ctx)
+		close(done)
+	}()
+
+	if !enum.waitForCalls(1, 2*time.Second) {
+		t.Fatal("Timed out waiting for snapshot generation")
+	}
+	cancel()
+	<-done
+
+	// Should succeed without panicking (nil uploader is safe)
+	calls := enum.getSnapshotCalls("store-a")
+	if calls < 1 {
+		t.Errorf("Expected at least 1 GenerateSnapshot call, got %d", calls)
 	}
 }

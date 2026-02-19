@@ -11,10 +11,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hyperengineering/engram/internal/multistore"
 	"github.com/hyperengineering/engram/internal/plugin"
 	"github.com/hyperengineering/engram/internal/plugin/recall"
+	"github.com/hyperengineering/engram/internal/snapshot"
 	"github.com/hyperengineering/engram/internal/store"
 	engramsync "github.com/hyperengineering/engram/internal/sync"
 	"github.com/hyperengineering/engram/internal/types"
@@ -130,7 +132,7 @@ func setupSyncTestEnv(t *testing.T) (*multistore.StoreManager, *Handler, *multis
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 
 	return manager, handler, managed
 }
@@ -1423,5 +1425,168 @@ func TestSyncSnapshot_RouteRegistered(t *testing.T) {
 	body := w.Body.String()
 	if !strings.HasPrefix(body, "SQLite format 3") {
 		t.Errorf("body doesn't look like a SQLite file, got prefix: %q", body[:min(len(body), 20)])
+	}
+}
+
+// --- Pre-signed URL Redirect Tests ---
+
+// mockSnapshotUploader implements snapshot.Uploader for API handler tests.
+type mockSnapshotUploader struct {
+	presignedURL string
+	presignedErr error
+	uploadErr    error
+}
+
+func (m *mockSnapshotUploader) Upload(ctx context.Context, storeID string, filePath string) error {
+	return m.uploadErr
+}
+
+func (m *mockSnapshotUploader) PresignedURL(ctx context.Context, storeID string) (string, time.Time, error) {
+	if m.presignedErr != nil {
+		return "", time.Time{}, m.presignedErr
+	}
+	return m.presignedURL, time.Now().Add(15 * time.Minute), nil
+}
+
+func TestSyncSnapshot_RedirectWhenS3Configured(t *testing.T) {
+	uploader := &mockSnapshotUploader{
+		presignedURL: "https://s3.example.com/bucket/test-store/snapshot/current.db?presigned=true",
+	}
+
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(bytes.NewReader(testData))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := &Handler{
+		store:    s,
+		embedder: embedder,
+		uploader: uploader,
+		apiKey:   "test-api-key",
+		version:  "1.0.0",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d (302 redirect)", w.Code, http.StatusFound)
+	}
+
+	location := w.Header().Get("Location")
+	if location != uploader.presignedURL {
+		t.Errorf("Location = %q, want %q", location, uploader.presignedURL)
+	}
+}
+
+func TestSyncSnapshot_FallbackWhenPresignedURLFails(t *testing.T) {
+	uploader := &mockSnapshotUploader{
+		presignedErr: errors.New("S3 service unavailable"),
+	}
+
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(bytes.NewReader(testData))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := &Handler{
+		store:    s,
+		embedder: embedder,
+		uploader: uploader,
+		apiKey:   "test-api-key",
+		version:  "1.0.0",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	// Should fall back to local streaming (200 OK, not redirect)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (local streaming fallback)", w.Code, http.StatusOK)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/octet-stream")
+	}
+
+	if !bytes.Equal(w.Body.Bytes(), testData) {
+		t.Errorf("body = %q, want %q", w.Body.String(), string(testData))
+	}
+}
+
+func TestSyncSnapshot_FallbackWhenNoopUploader(t *testing.T) {
+	// NoopUploader returns ErrNotConfigured for PresignedURL
+	uploader := &snapshot.NoopUploader{}
+
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(bytes.NewReader(testData))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := &Handler{
+		store:    s,
+		embedder: embedder,
+		uploader: uploader,
+		apiKey:   "test-api-key",
+		version:  "1.0.0",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	// Should fall back to local streaming when S3 is not configured
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (local streaming fallback)", w.Code, http.StatusOK)
+	}
+
+	if !bytes.Equal(w.Body.Bytes(), testData) {
+		t.Errorf("body = %q, want %q", w.Body.String(), string(testData))
+	}
+}
+
+func TestSyncSnapshot_NilUploaderUsesLocalStreaming(t *testing.T) {
+	testData := []byte("SQLite format 3\x00test snapshot data")
+	reader := io.NopCloser(bytes.NewReader(testData))
+
+	s := &mockStore{
+		stats:          &types.StoreStats{},
+		snapshotReader: reader,
+	}
+	embedder := &mockEmbedder{model: "test-model"}
+	handler := &Handler{
+		store:    s,
+		embedder: embedder,
+		uploader: nil, // No uploader configured
+		apiKey:   "test-api-key",
+		version:  "1.0.0",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/test-store/sync/snapshot", nil)
+	w := httptest.NewRecorder()
+
+	handler.SyncSnapshot(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if !bytes.Equal(w.Body.Bytes(), testData) {
+		t.Errorf("body = %q, want %q", w.Body.String(), string(testData))
 	}
 }

@@ -35,7 +35,7 @@ func TestListStores_Empty(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores", nil)
@@ -73,7 +73,7 @@ func TestListStores_Multiple(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores", nil)
@@ -116,7 +116,7 @@ func TestListStores_Unauthorized(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores", nil)
@@ -139,7 +139,7 @@ func TestGetStoreInfo_Success(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/default", nil)
@@ -171,7 +171,7 @@ func TestGetStoreInfo_NotFound(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/nonexistent", nil)
@@ -194,7 +194,7 @@ func TestGetStoreInfo_EncodedPath(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// URL-encoded org/project -> org%2Fproject
@@ -224,7 +224,7 @@ func TestGetStoreInfo_InvalidFormat(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/INVALID", nil)
@@ -244,7 +244,7 @@ func TestCreateStore_Success(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"store_id": "newstore", "description": "New store"}`
@@ -284,7 +284,7 @@ func TestCreateStore_InvalidID(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"store_id": "INVALID_ID"}`
@@ -309,7 +309,7 @@ func TestCreateStore_AlreadyExists(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"store_id": "existing"}`
@@ -331,7 +331,7 @@ func TestCreateStore_MissingBody(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores", nil)
@@ -355,7 +355,7 @@ func TestDeleteStore_Success(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/stores/todelete?confirm=true", nil)
@@ -384,7 +384,7 @@ func TestDeleteStore_MissingConfirm(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Missing confirm=true
@@ -405,7 +405,7 @@ func TestDeleteStore_NotFound(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/stores/nonexistent?confirm=true", nil)
@@ -428,7 +428,7 @@ func TestDeleteStore_DefaultForbidden(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/stores/default?confirm=true", nil)
@@ -451,7 +451,7 @@ func TestDeleteStore_EncodedPath(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// URL-encoded org/project -> org%2Fproject
@@ -476,7 +476,7 @@ func TestStoreHandlers_NoStoreManager(t *testing.T) {
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
 	// No store manager (nil)
-	handler := NewHandler(s, nil, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, nil, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, nil)
 
 	tests := []struct {
@@ -525,7 +525,7 @@ func TestStoreScopedIngest_Success(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"source_id": "test-source", "lore": [{"content": "test lore", "category": "PATTERN_OUTCOME", "confidence": 0.8}]}`
@@ -558,7 +558,7 @@ func TestStoreScopedIngest_StoreNotFound(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"source_id": "test-source", "lore": [{"content": "test lore", "category": "PATTERN_OUTCOME", "confidence": 0.8}]}`
@@ -585,7 +585,7 @@ func TestStoreScopedDelta_Success(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	since := "2020-01-01T00:00:00Z"
@@ -611,7 +611,7 @@ func TestStoreScopedFeedback_RouteExists(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Empty feedback array will return 422 validation error,
@@ -642,7 +642,7 @@ func TestBackwardCompatibility_LoreRoutes(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Test that existing /lore route still works
@@ -672,7 +672,7 @@ func TestBackwardCompatibility_DeltaRoute(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	since := "2020-01-01T00:00:00Z"
@@ -693,7 +693,7 @@ func TestStoreScopedDelete_NotFound_Store(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Store doesn't exist
@@ -724,7 +724,7 @@ func TestStoreIsolation_IngestThenQueryOther(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Ingest to store-a
@@ -791,7 +791,7 @@ func TestEncodedStoreID_InPath(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Use URL-encoded path: org%2Fproject
@@ -824,7 +824,7 @@ func TestStoreScopedStats_ReturnsStoreStats(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Request stats for project-a (no auth required)
@@ -855,7 +855,7 @@ func TestStoreScopedStats_StoreNotFound(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Request stats for nonexistent store
@@ -883,7 +883,7 @@ func TestStoreScopedStats_NoAuthRequired(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "secret-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "secret-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// Request WITHOUT auth header - should still work (public endpoint)
@@ -911,7 +911,7 @@ func TestStoreScopedStats_URLEncodedStoreID(t *testing.T) {
 
 	defaultStore := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	// URL-encoded org/project -> org%2Fproject
@@ -943,7 +943,7 @@ func TestCreateStore_API_WithType(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"store_id": "tract-store", "type": "tract", "description": "Tract store"}`
@@ -977,7 +977,7 @@ func TestCreateStore_API_NoType_DefaultsRecall(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"store_id": "no-type-store", "description": "No type"}`
@@ -1011,7 +1011,7 @@ func TestGetStoreInfo_IncludesType(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores/typed-store", nil)
@@ -1047,7 +1047,7 @@ func TestListStores_IncludesType(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stores", nil)
@@ -1084,7 +1084,7 @@ func TestCreateStore_API_SchemaVersionInResponse(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, manager)
 
 	body := `{"store_id": "sv-store", "description": "Schema version test"}`

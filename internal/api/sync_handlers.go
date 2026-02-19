@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hyperengineering/engram/internal/plugin"
+	"github.com/hyperengineering/engram/internal/snapshot"
 	"github.com/hyperengineering/engram/internal/store"
 	engramsync "github.com/hyperengineering/engram/internal/sync"
 )
@@ -370,11 +371,36 @@ func (h *Handler) SyncDelta(w http.ResponseWriter, r *http.Request) {
 
 // SyncSnapshot handles GET /api/v1/stores/{store_id}/sync/snapshot
 // Streams the cached database snapshot as application/octet-stream.
+// When S3 is configured, returns a 302 redirect to a pre-signed URL.
 // Returns 503 with Retry-After if no snapshot is available.
 func (h *Handler) SyncSnapshot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx := r.Context()
 	storeID := StoreIDFromContext(ctx)
+
+	// Try pre-signed URL redirect if uploader is configured
+	if h.uploader != nil {
+		presignedURL, _, err := h.uploader.PresignedURL(ctx, storeID)
+		if err == nil {
+			slog.Info("sync snapshot served via S3 redirect",
+				"component", "api",
+				"action", "sync_snapshot_redirect",
+				"store_id", storeID,
+				"remote_addr", r.RemoteAddr,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+			http.Redirect(w, r, presignedURL, http.StatusFound)
+			return
+		}
+		// Fall through to local streaming on any error (including ErrNotConfigured)
+		if !errors.Is(err, snapshot.ErrNotConfigured) {
+			slog.Warn("pre-signed URL generation failed, falling back to local streaming",
+				"component", "api",
+				"store_id", storeID,
+				"error", err,
+			)
+		}
+	}
 
 	// Get store
 	s := h.getStoreForRequest(r)

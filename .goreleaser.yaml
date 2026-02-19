@@ -154,6 +154,12 @@ brews:
 
           # Optional: Override default host (localhost)
           # ENGRAM_HOST=0.0.0.0
+
+          # Optional: S3-compatible storage for snapshot distribution
+          # ENGRAM_SNAPSHOT_BUCKET=
+          # ENGRAM_S3_ENDPOINT=
+          # ENGRAM_S3_ACCESS_KEY=
+          # ENGRAM_S3_SECRET_KEY=
         EOS
         (etc/"engram/environment").chmod 0600
       end

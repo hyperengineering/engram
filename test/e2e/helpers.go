@@ -204,7 +204,7 @@ func setupSyncTestEnv(t *testing.T) (*multistore.StoreManager, *api.Handler, *mu
 
 	defaultStore := &noopStore{}
 	embedder := &noopEmbedder{}
-	handler := api.NewHandler(defaultStore, manager, embedder, "test-api-key", "1.0.0")
+	handler := api.NewHandler(defaultStore, manager, embedder, nil, "test-api-key", "1.0.0")
 
 	return manager, handler, managed
 }

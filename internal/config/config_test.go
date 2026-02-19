@@ -34,6 +34,13 @@ func clearEnv(t *testing.T) {
 		"ENGRAM_SIMILARITY_THRESHOLD",
 		"ENGRAM_STORES_ROOT",
 		"ENGRAM_ADDRESS", // legacy
+		"ENGRAM_SNAPSHOT_BUCKET",
+		"ENGRAM_S3_ENDPOINT",
+		"ENGRAM_S3_REGION",
+		"ENGRAM_S3_ACCESS_KEY",
+		"ENGRAM_S3_SECRET_KEY",
+		"ENGRAM_S3_USE_SSL",
+		"ENGRAM_S3_URL_EXPIRY",
 	}
 	for _, v := range envVars {
 		os.Unsetenv(v)
@@ -761,5 +768,180 @@ stores:
 
 	if cfg.Stores.RootPath != "/env/stores" {
 		t.Errorf("Stores.RootPath = %q, want %q (env override)", cfg.Stores.RootPath, "/env/stores")
+	}
+}
+
+// --- Snapshot Storage Config Tests ---
+
+// Test: SnapshotStorage defaults
+func TestConfig_SnapshotStorage_Defaults(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Bucket should be empty by default (S3 not configured)
+	if cfg.SnapshotStorage.Bucket != "" {
+		t.Errorf("SnapshotStorage.Bucket = %q, want empty", cfg.SnapshotStorage.Bucket)
+	}
+	// Region defaults to us-east-1
+	if cfg.SnapshotStorage.Region != "us-east-1" {
+		t.Errorf("SnapshotStorage.Region = %q, want %q", cfg.SnapshotStorage.Region, "us-east-1")
+	}
+	// UseSSL defaults to true
+	if cfg.SnapshotStorage.UseSSL == nil {
+		t.Fatal("SnapshotStorage.UseSSL should not be nil")
+	}
+	if !*cfg.SnapshotStorage.UseSSL {
+		t.Error("SnapshotStorage.UseSSL should default to true")
+	}
+	// URLExpiry defaults to 15 minutes
+	if dur(cfg.SnapshotStorage.URLExpiry) != 15*time.Minute {
+		t.Errorf("SnapshotStorage.URLExpiry = %v, want 15m", dur(cfg.SnapshotStorage.URLExpiry))
+	}
+	// Secrets should be empty
+	if cfg.SnapshotStorage.AccessKey != "" {
+		t.Errorf("SnapshotStorage.AccessKey = %q, want empty", cfg.SnapshotStorage.AccessKey)
+	}
+	if cfg.SnapshotStorage.SecretKey != "" {
+		t.Errorf("SnapshotStorage.SecretKey = %q, want empty", cfg.SnapshotStorage.SecretKey)
+	}
+}
+
+// Test: S3 env var overrides
+func TestConfig_SnapshotStorage_EnvOverrides(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	os.Setenv("ENGRAM_SNAPSHOT_BUCKET", "my-snapshots")
+	os.Setenv("ENGRAM_S3_ENDPOINT", "s3.us-west-2.amazonaws.com")
+	os.Setenv("ENGRAM_S3_REGION", "us-west-2")
+	os.Setenv("ENGRAM_S3_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE")
+	os.Setenv("ENGRAM_S3_SECRET_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	os.Setenv("ENGRAM_S3_USE_SSL", "false")
+	os.Setenv("ENGRAM_S3_URL_EXPIRY", "30m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.SnapshotStorage.Bucket != "my-snapshots" {
+		t.Errorf("Bucket = %q, want %q", cfg.SnapshotStorage.Bucket, "my-snapshots")
+	}
+	if cfg.SnapshotStorage.Endpoint != "s3.us-west-2.amazonaws.com" {
+		t.Errorf("Endpoint = %q, want %q", cfg.SnapshotStorage.Endpoint, "s3.us-west-2.amazonaws.com")
+	}
+	if cfg.SnapshotStorage.Region != "us-west-2" {
+		t.Errorf("Region = %q, want %q", cfg.SnapshotStorage.Region, "us-west-2")
+	}
+	if cfg.SnapshotStorage.AccessKey != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("AccessKey = %q, want %q", cfg.SnapshotStorage.AccessKey, "AKIAIOSFODNN7EXAMPLE")
+	}
+	if cfg.SnapshotStorage.SecretKey != "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" {
+		t.Errorf("SecretKey = %q, want %q", cfg.SnapshotStorage.SecretKey, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	}
+	if cfg.SnapshotStorage.UseSSL == nil || *cfg.SnapshotStorage.UseSSL {
+		t.Error("UseSSL should be false when env var is 'false'")
+	}
+	if dur(cfg.SnapshotStorage.URLExpiry) != 30*time.Minute {
+		t.Errorf("URLExpiry = %v, want 30m", dur(cfg.SnapshotStorage.URLExpiry))
+	}
+}
+
+// Test: S3 secrets are NOT serializable via YAML
+func TestConfig_SnapshotStorage_SecretsNotInYAML(t *testing.T) {
+	cfg := &Config{
+		SnapshotStorage: SnapshotStorageConfig{
+			Bucket:    "test-bucket",
+			AccessKey: "secret-access-key",
+			SecretKey: "secret-secret-key",
+		},
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() error = %v", err)
+	}
+
+	yamlStr := string(data)
+	if strings.Contains(yamlStr, "secret-access-key") {
+		t.Errorf("YAML contains S3 AccessKey secret: %s", yamlStr)
+	}
+	if strings.Contains(yamlStr, "secret-secret-key") {
+		t.Errorf("YAML contains S3 SecretKey secret: %s", yamlStr)
+	}
+}
+
+// Test: SnapshotStorage from YAML file
+func TestConfig_SnapshotStorage_FromYAML(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	yamlContent := `
+snapshot_storage:
+  bucket: yaml-bucket
+  endpoint: minio.local:9000
+  region: eu-west-1
+  use_ssl: false
+  url_expiry: 10m
+`
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := LoadFromFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.SnapshotStorage.Bucket != "yaml-bucket" {
+		t.Errorf("Bucket = %q, want %q", cfg.SnapshotStorage.Bucket, "yaml-bucket")
+	}
+	if cfg.SnapshotStorage.Endpoint != "minio.local:9000" {
+		t.Errorf("Endpoint = %q, want %q", cfg.SnapshotStorage.Endpoint, "minio.local:9000")
+	}
+	if cfg.SnapshotStorage.Region != "eu-west-1" {
+		t.Errorf("Region = %q, want %q", cfg.SnapshotStorage.Region, "eu-west-1")
+	}
+	if cfg.SnapshotStorage.UseSSL == nil || *cfg.SnapshotStorage.UseSSL {
+		t.Error("UseSSL should be false from YAML")
+	}
+	if dur(cfg.SnapshotStorage.URLExpiry) != 10*time.Minute {
+		t.Errorf("URLExpiry = %v, want 10m", dur(cfg.SnapshotStorage.URLExpiry))
+	}
+}
+
+// Test: UseSSL defaults to true when not set in YAML
+func TestConfig_SnapshotStorage_UseSSLDefault(t *testing.T) {
+	clearEnv(t)
+	setDevModeEnv(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	yamlContent := `
+snapshot_storage:
+  bucket: some-bucket
+`
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := LoadFromFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	// UseSSL should retain default true even when YAML only sets bucket
+	if cfg.SnapshotStorage.UseSSL == nil {
+		t.Fatal("UseSSL should not be nil")
+	}
+	if !*cfg.SnapshotStorage.UseSSL {
+		t.Error("UseSSL should default to true when not set in YAML")
 	}
 }

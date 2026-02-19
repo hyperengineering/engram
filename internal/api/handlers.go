@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/hyperengineering/engram/internal/embedding"
 	"github.com/hyperengineering/engram/internal/multistore"
+	"github.com/hyperengineering/engram/internal/snapshot"
 	"github.com/hyperengineering/engram/internal/store"
 	"github.com/hyperengineering/engram/internal/types"
 	"github.com/hyperengineering/engram/internal/validation"
@@ -40,17 +41,20 @@ type Handler struct {
 	store        store.Store
 	storeManager *multistore.StoreManager
 	embedder     embedding.Embedder
+	uploader     snapshot.Uploader
 	apiKey       string
 	version      string
 }
 
 // NewHandler creates a new Handler with store.Store interface
 // The storeManager parameter can be nil for backward compatibility.
-func NewHandler(s store.Store, mgr *multistore.StoreManager, e embedding.Embedder, apiKey, version string) *Handler {
+// The uploader parameter can be nil; when nil, snapshot serving falls back to local streaming.
+func NewHandler(s store.Store, mgr *multistore.StoreManager, e embedding.Embedder, uploader snapshot.Uploader, apiKey, version string) *Handler {
 	return &Handler{
 		store:        s,
 		storeManager: mgr,
 		embedder:     e,
+		uploader:     uploader,
 		apiKey:       apiKey,
 		version:      version,
 	}
@@ -282,11 +286,37 @@ func (h *Handler) IngestLore(w http.ResponseWriter, r *http.Request) {
 
 // Snapshot handles GET /api/v1/lore/snapshot and GET /api/v1/stores/{store_id}/lore/snapshot
 // Streams the cached database snapshot as application/octet-stream.
+// When S3 is configured, returns a 302 redirect to a pre-signed URL.
 // Returns 503 with Retry-After if no snapshot is available.
 func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	sourceID := extractSourceID(r)
 	storeID := StoreIDFromContext(r.Context())
+
+	// Try pre-signed URL redirect if uploader is configured
+	if h.uploader != nil {
+		presignedURL, _, err := h.uploader.PresignedURL(r.Context(), storeID)
+		if err == nil {
+			slog.Info("recall client bootstrap via S3 redirect",
+				"component", "api",
+				"action", "client_bootstrap_redirect",
+				"store_id", storeID,
+				"source_id", sourceID,
+				"remote_addr", r.RemoteAddr,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+			http.Redirect(w, r, presignedURL, http.StatusFound)
+			return
+		}
+		// Fall through to local streaming on any error (including ErrNotConfigured)
+		if !errors.Is(err, snapshot.ErrNotConfigured) {
+			slog.Warn("pre-signed URL generation failed, falling back to local streaming",
+				"component", "api",
+				"store_id", storeID,
+				"error", err,
+			)
+		}
+	}
 
 	s := h.getStoreForRequest(r)
 

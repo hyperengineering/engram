@@ -459,7 +459,7 @@ func TestHealth_WithStoreParameter(t *testing.T) {
 
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
 	defaultStore := &mockStore{stats: &types.StoreStats{LoreCount: 100}}
-	handler := NewHandler(defaultStore, mgr, embedder, "test-key", "1.0.0")
+	handler := NewHandler(defaultStore, mgr, embedder, nil, "test-key", "1.0.0")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health?store=test-store", nil)
 	w := httptest.NewRecorder()
@@ -495,7 +495,7 @@ func TestHealth_WithStoreParameter_NotFound(t *testing.T) {
 
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
 	defaultStore := &mockStore{stats: &types.StoreStats{LoreCount: 100}}
-	handler := NewHandler(defaultStore, mgr, embedder, "test-key", "1.0.0")
+	handler := NewHandler(defaultStore, mgr, embedder, nil, "test-key", "1.0.0")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health?store=nonexistent", nil)
 	w := httptest.NewRecorder()
@@ -517,7 +517,7 @@ func TestHealth_WithStoreParameter_InvalidID(t *testing.T) {
 
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
 	defaultStore := &mockStore{stats: &types.StoreStats{LoreCount: 100}}
-	handler := NewHandler(defaultStore, mgr, embedder, "test-key", "1.0.0")
+	handler := NewHandler(defaultStore, mgr, embedder, nil, "test-key", "1.0.0")
 
 	// INVALID has uppercase letters, which is invalid
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health?store=INVALID", nil)
@@ -1652,7 +1652,7 @@ func TestSnapshotEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, nil, embedder, "api-key", "1.0.0")
+	handler := NewHandler(sqliteStore, nil, embedder, nil, "api-key", "1.0.0")
 
 	// Make request
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/snapshot", nil)
@@ -1915,7 +1915,7 @@ func TestDeltaEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, nil, embedder, "api-key", "1.0.0")
+	handler := NewHandler(sqliteStore, nil, embedder, nil, "api-key", "1.0.0")
 
 	// Make delta request
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/lore/delta?since="+sinceBefore, nil)
@@ -2349,7 +2349,7 @@ func TestFlushDuringGracefulShutdown_FeedbackCompletes(t *testing.T) {
 	}
 	slowStore := &slowFeedbackStore{mockStore: baseStore, delay: 100 * time.Millisecond}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(slowStore, nil, embedder, "test-key", "1.0.0")
+	handler := NewHandler(slowStore, nil, embedder, nil, "test-key", "1.0.0")
 	router := NewRouter(handler, nil)
 
 	// Create a real HTTP server
@@ -2566,7 +2566,7 @@ func TestDeleteLore_StoreError(t *testing.T) {
 func TestDeleteLore_Unauthorized(t *testing.T) {
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(s, nil, embedder, "secret-api-key", "1.0.0")
+	handler := NewHandler(s, nil, embedder, nil, "secret-api-key", "1.0.0")
 	router := NewRouter(handler, nil)
 
 	// Request WITHOUT Authorization header
@@ -2931,7 +2931,7 @@ func TestFeedback_PerformanceWarningIncludesSourceID(t *testing.T) {
 	}
 	slowStore := &slowFeedbackStore{mockStore: baseStore, delay: 600 * time.Millisecond}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(slowStore, nil, embedder, "api-key", "1.0.0")
+	handler := NewHandler(slowStore, nil, embedder, nil, "api-key", "1.0.0")
 
 	body := `{
 		"source_id": "devcontainer-slow123",
@@ -2973,7 +2973,7 @@ func TestFeedback_PerformanceWarningIncludesSourceID(t *testing.T) {
 func TestDeleteLore_RateLimited(t *testing.T) {
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "text-embedding-3-small"}
-	handler := NewHandler(s, nil, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(s, nil, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, nil)
 
 	// Make many rapid requests to trigger rate limiting
@@ -3043,7 +3043,7 @@ func TestDeleteEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, nil, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(sqliteStore, nil, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, nil)
 
 	// Make DELETE request
@@ -3137,7 +3137,7 @@ func TestRequireRecallStore_RecallStore(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-key", "1.0.0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/my-recall-store/lore", nil)
 	reqCtx := WithStoreID(req.Context(), "my-recall-store")
@@ -3165,7 +3165,7 @@ func TestRequireRecallStore_TractStore(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-key", "1.0.0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/my-tract-store/lore", nil)
 	reqCtx := WithStoreID(req.Context(), "my-tract-store")
@@ -3200,7 +3200,7 @@ func TestRequireRecallStore_EmptyType(t *testing.T) {
 
 	s := &mockStore{stats: &types.StoreStats{}}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, manager, embedder, "test-key", "1.0.0")
+	handler := NewHandler(s, manager, embedder, nil, "test-key", "1.0.0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/empty-type-store/lore", nil)
 	reqCtx := WithStoreID(req.Context(), "empty-type-store")
@@ -3227,7 +3227,7 @@ func TestIngestHandler_TractStore(t *testing.T) {
 	}
 
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(managed.Store, manager, embedder, "test-key", "1.0.0")
+	handler := NewHandler(managed.Store, manager, embedder, nil, "test-key", "1.0.0")
 
 	body := `{"source_id": "client-1", "lore": [{"content": "test", "category": "PATTERN_OUTCOME", "confidence": 0.5}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/stores/tract-store/lore", strings.NewReader(body))
@@ -3257,7 +3257,7 @@ func TestDeleteHandler_TractStore(t *testing.T) {
 	}
 
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(managed.Store, manager, embedder, "test-key", "1.0.0")
+	handler := NewHandler(managed.Store, manager, embedder, nil, "test-key", "1.0.0")
 
 	// Set up chi context for URL param
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/stores/tract-store-2/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
@@ -3304,7 +3304,7 @@ func TestStatsEndpoint_RoundTrip(t *testing.T) {
 
 	// Create handler with real store
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(sqliteStore, nil, embedder, "test-api-key", "1.0.0")
+	handler := NewHandler(sqliteStore, nil, embedder, nil, "test-api-key", "1.0.0")
 	router := NewRouter(handler, nil)
 
 	// Make GET request WITHOUT auth (stats is public)
@@ -3371,7 +3371,7 @@ func TestStatsEndpoint_NoAuthRequired(t *testing.T) {
 		},
 	}
 	embedder := &mockEmbedder{model: "test-model"}
-	handler := NewHandler(s, nil, embedder, "secret-api-key", "1.0.0")
+	handler := NewHandler(s, nil, embedder, nil, "secret-api-key", "1.0.0")
 	router := NewRouter(handler, nil)
 
 	// Make GET request WITHOUT auth header

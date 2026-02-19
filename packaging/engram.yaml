@@ -40,3 +40,14 @@ log:
 deduplication:
   enabled: true
   similarity_threshold: 0.92
+
+# Snapshot S3 storage (optional)
+# When configured, snapshots are uploaded to S3-compatible storage
+# and served via pre-signed URL redirects.
+# When not configured, snapshots are served from local disk.
+# snapshot_storage:
+#   bucket: ""
+#   endpoint: ""
+#   region: us-east-1
+#   use_ssl: true
+#   url_expiry: 15m

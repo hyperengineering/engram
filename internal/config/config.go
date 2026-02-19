@@ -20,7 +20,8 @@ type Config struct {
 	Worker        WorkerConfig        `yaml:"worker"`
 	Log           LogConfig           `yaml:"log"`
 	Deduplication DeduplicationConfig `yaml:"deduplication"`
-	Stores        StoresConfig        `yaml:"stores"`
+	Stores          StoresConfig          `yaml:"stores"`
+	SnapshotStorage SnapshotStorageConfig `yaml:"snapshot_storage"`
 }
 
 // ServerConfig contains HTTP server settings.
@@ -75,6 +76,18 @@ type DeduplicationConfig struct {
 // StoresConfig contains multi-store settings.
 type StoresConfig struct {
 	RootPath string `yaml:"root_path"`
+}
+
+// SnapshotStorageConfig contains S3-compatible snapshot storage settings.
+// When Bucket is empty, S3 storage is entirely skipped (local-only mode).
+type SnapshotStorageConfig struct {
+	Bucket    string   `yaml:"bucket"`
+	Endpoint  string   `yaml:"endpoint"`
+	Region    string   `yaml:"region"`
+	UseSSL    *bool    `yaml:"use_ssl"`
+	AccessKey string   `yaml:"-"` // env-only, never in YAML
+	SecretKey string   `yaml:"-"` // env-only, never in YAML
+	URLExpiry Duration `yaml:"url_expiry"`
 }
 
 // GetDeduplicationEnabled returns whether deduplication is enabled.
@@ -194,6 +207,11 @@ func newDefaults() *Config {
 		},
 		Stores: StoresConfig{
 			RootPath: "~/.engram/stores",
+		},
+		SnapshotStorage: SnapshotStorageConfig{
+			Region:    "us-east-1",
+			UseSSL:    boolPtr(true),
+			URLExpiry: Duration(15 * time.Minute),
 		},
 	}
 }
@@ -322,6 +340,32 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("ENGRAM_STORES_ROOT"); v != "" {
 		cfg.Stores.RootPath = v
 	}
+
+	// Snapshot storage (S3-compatible)
+	if v := os.Getenv("ENGRAM_SNAPSHOT_BUCKET"); v != "" {
+		cfg.SnapshotStorage.Bucket = v
+	}
+	if v := os.Getenv("ENGRAM_S3_ENDPOINT"); v != "" {
+		cfg.SnapshotStorage.Endpoint = v
+	}
+	if v := os.Getenv("ENGRAM_S3_REGION"); v != "" {
+		cfg.SnapshotStorage.Region = v
+	}
+	if v := os.Getenv("ENGRAM_S3_ACCESS_KEY"); v != "" {
+		cfg.SnapshotStorage.AccessKey = v
+	}
+	if v := os.Getenv("ENGRAM_S3_SECRET_KEY"); v != "" {
+		cfg.SnapshotStorage.SecretKey = v
+	}
+	if v := os.Getenv("ENGRAM_S3_USE_SSL"); v != "" {
+		b := v == "true"
+		cfg.SnapshotStorage.UseSSL = &b
+	}
+	if v := os.Getenv("ENGRAM_S3_URL_EXPIRY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.SnapshotStorage.URLExpiry = Duration(d)
+		}
+	}
 }
 
 // validate checks that required configuration values are set.
@@ -339,6 +383,11 @@ func (c *Config) validate() error {
 		return errors.New("ENGRAM_API_KEY is required")
 	}
 	return nil
+}
+
+// boolPtr returns a pointer to a bool value.
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // getEnv returns the value of an environment variable or a default.
