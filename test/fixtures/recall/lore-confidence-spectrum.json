@@ -1,0 +1,38 @@
+[
+  {
+    "content": "Untested hypothesis: embedding similarity thresholds below 0.3 produce too many false positives for lore deduplication.",
+    "category": "PERFORMANCE_INSIGHT",
+    "confidence": 0.0,
+    "sources": ["hypothesis"]
+  },
+  {
+    "content": "Early observation: batch push with 1000 entries completes in under 500ms on SQLite with WAL mode enabled.",
+    "category": "PERFORMANCE_INSIGHT",
+    "confidence": 0.1,
+    "sources": ["early-benchmark"]
+  },
+  {
+    "content": "Moderate confidence: delta pagination with limit=500 balances response size and round-trip count for typical sync sessions.",
+    "category": "PATTERN_OUTCOME",
+    "confidence": 0.5,
+    "sources": ["pagination-tuning"]
+  },
+  {
+    "content": "Confirmed pattern: using t.TempDir() for test isolation ensures automatic cleanup even when tests panic.",
+    "category": "TESTING_STRATEGY",
+    "confidence": 0.7,
+    "sources": ["test-isolation"]
+  },
+  {
+    "content": "High confidence: idempotency cache with 24h TTL handles all realistic retry windows without excessive storage overhead.",
+    "category": "ARCHITECTURAL_DECISION",
+    "confidence": 0.9,
+    "sources": ["idempotency-tuning"]
+  },
+  {
+    "content": "Proven fact: monotonic sequence numbers from SQLite INTEGER PRIMARY KEY AUTOINCREMENT guarantee gap-free ordering for change log entries.",
+    "category": "DEPENDENCY_BEHAVIOR",
+    "confidence": 1.0,
+    "sources": ["sqlite-autoincrement"]
+  }
+]

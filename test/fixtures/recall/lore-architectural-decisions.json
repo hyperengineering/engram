@@ -1,0 +1,37 @@
+[
+  {
+    "content": "Change log uses monotonic server-assigned sequence numbers rather than client timestamps for ordering, ensuring total ordering across all clients without clock synchronization.",
+    "context": "Engram sync protocol design — Story 8.1 schema design",
+    "category": "ARCHITECTURAL_DECISION",
+    "confidence": 0.85,
+    "sources": ["sync-protocol-design"]
+  },
+  {
+    "content": "Plugin system uses a registry pattern with compile-time interface checks. Each store type registers a DomainPlugin that handles validation and replay for its domain-specific tables.",
+    "context": "Engram plugin architecture — Story 8.4 plugin system",
+    "category": "ARCHITECTURAL_DECISION",
+    "confidence": 0.8,
+    "sources": ["plugin-architecture"]
+  },
+  {
+    "content": "Idempotency for sync push uses a cached response keyed by push_id with configurable TTL. This avoids duplicate side effects when clients retry failed pushes.",
+    "context": "Engram sync protocol — Story 8.5 push endpoint",
+    "category": "ARCHITECTURAL_DECISION",
+    "confidence": 0.75,
+    "sources": ["sync-push-design"]
+  },
+  {
+    "content": "Schema version negotiation uses a strict policy: client ahead of server returns 409 Conflict, client behind server is accepted for backward compatibility.",
+    "context": "Engram sync protocol — Story 8.5 schema negotiation",
+    "category": "ARCHITECTURAL_DECISION",
+    "confidence": 0.7,
+    "sources": ["schema-negotiation"]
+  },
+  {
+    "content": "Snapshot endpoint serves a full SQLite database file for client bootstrap. Clients download once, then use delta sync for incremental updates.",
+    "context": "Engram sync protocol — Story 8.7 snapshot endpoint",
+    "category": "ARCHITECTURAL_DECISION",
+    "confidence": 0.8,
+    "sources": ["snapshot-bootstrap"]
+  }
+]

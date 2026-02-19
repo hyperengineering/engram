@@ -68,6 +68,19 @@ func (p *Plugin) validateLorePayload(entry sync.ChangeLogEntry) error {
 		return fmt.Errorf("payload required for upsert")
 	}
 
+	// Detect double-encoded JSON in payload.
+	// If the raw bytes start with `"` (quoted string) and parse to a string
+	// that itself is valid JSON, the payload is double-encoded.
+	if len(entry.Payload) > 0 && entry.Payload[0] == '"' {
+		var stringPayload string
+		if json.Unmarshal(entry.Payload, &stringPayload) == nil {
+			var nested map[string]interface{}
+			if json.Unmarshal([]byte(stringPayload), &nested) == nil {
+				return fmt.Errorf("payload is double-encoded JSON string; send raw JSON object, not a stringified JSON")
+			}
+		}
+	}
+
 	var payload LorePayload
 	if err := json.Unmarshal(entry.Payload, &payload); err != nil {
 		return fmt.Errorf("invalid payload JSON: %w", err)

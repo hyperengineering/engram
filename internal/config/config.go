@@ -25,6 +25,7 @@ type Config struct {
 
 // ServerConfig contains HTTP server settings.
 type ServerConfig struct {
+	Host            string   `yaml:"host"`
 	Port            int      `yaml:"port"`
 	ReadTimeout     Duration `yaml:"read_timeout"`
 	WriteTimeout    Duration `yaml:"write_timeout"`
@@ -220,6 +221,9 @@ func loadYAMLFile(cfg *Config, path string) error {
 // Only non-empty env vars override config values.
 func applyEnvOverrides(cfg *Config) {
 	// Server
+	if v := os.Getenv("ENGRAM_HOST"); v != "" {
+		cfg.Server.Host = v
+	}
 	if v := os.Getenv("ENGRAM_PORT"); v != "" {
 		if port, err := strconv.Atoi(v); err == nil {
 			cfg.Server.Port = port

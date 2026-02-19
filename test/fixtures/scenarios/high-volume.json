@@ -1,0 +1,17 @@
+{
+  "description": "500+ lore entries for pagination testing across multiple categories",
+  "source_id": "high-volume-client",
+  "entries": [
+    {"content": "High-volume entry 001: architectural pattern for message queuing in distributed systems.", "category": "ARCHITECTURAL_DECISION", "confidence": 0.7, "sources": ["hv-batch"]},
+    {"content": "High-volume entry 002: observed that retry with exponential backoff reduces thundering herd.", "category": "PATTERN_OUTCOME", "confidence": 0.65, "sources": ["hv-batch"]},
+    {"content": "High-volume entry 003: interface segregation keeps client dependencies narrow.", "category": "INTERFACE_LESSON", "confidence": 0.6, "sources": ["hv-batch"]},
+    {"content": "High-volume entry 004: NULL handling in composite unique indexes differs across SQLite versions.", "category": "EDGE_CASE_DISCOVERY", "confidence": 0.75, "sources": ["hv-batch"]},
+    {"content": "High-volume entry 005: test helper setup takes 3 lines but saves 20 lines per test function.", "category": "IMPLEMENTATION_FRICTION", "confidence": 0.5, "sources": ["hv-batch"]},
+    {"content": "High-volume entry 006: property-based testing catches edge cases unit tests miss.", "category": "TESTING_STRATEGY", "confidence": 0.7, "sources": ["hv-batch"]},
+    {"content": "High-volume entry 007: go-chi middleware ordering affects which handlers see modified context.", "category": "DEPENDENCY_BEHAVIOR", "confidence": 0.6, "sources": ["hv-batch"]},
+    {"content": "High-volume entry 008: batch INSERT with 100 rows is 10x faster than individual inserts in SQLite.", "category": "PERFORMANCE_INSIGHT", "confidence": 0.8, "sources": ["hv-batch"]}
+  ],
+  "repeat_pattern": true,
+  "total_count": 504,
+  "note": "Test code should generate entries by cycling through the 8 template entries with incrementing IDs to reach total_count"
+}

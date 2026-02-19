@@ -1,0 +1,47 @@
+{
+  "description": "Execution layer entities: implementation contexts linked to FWUs via FK",
+  "entries": [
+    {
+      "table_name": "implementation_contexts",
+      "row_id": "ic-001",
+      "operation": "upsert",
+      "payload": {
+        "id": "ic-001",
+        "fwu_id": "fwu-001",
+        "context_type": "technical_notes",
+        "content": "Health endpoints should return JSON with service name, version, and dependency status. Use chi middleware for consistency.",
+        "metadata": {"language": "go", "framework": "chi"},
+        "created_at": "2026-01-17T11:00:00Z",
+        "updated_at": "2026-01-17T11:00:00Z"
+      }
+    },
+    {
+      "table_name": "implementation_contexts",
+      "row_id": "ic-002",
+      "operation": "upsert",
+      "payload": {
+        "id": "ic-002",
+        "fwu_id": "fwu-001",
+        "context_type": "acceptance_criteria",
+        "content": "GET /health returns 200 with {\"status\":\"ok\"} when all deps healthy. Returns 503 with failed dep list otherwise.",
+        "metadata": {"format": "given_when_then"},
+        "created_at": "2026-01-17T11:15:00Z",
+        "updated_at": "2026-01-17T11:15:00Z"
+      }
+    },
+    {
+      "table_name": "implementation_contexts",
+      "row_id": "ic-003",
+      "operation": "upsert",
+      "payload": {
+        "id": "ic-003",
+        "fwu_id": "fwu-002",
+        "context_type": "technical_notes",
+        "content": "PagerDuty API v2 requires service key per team. Use PAGERDUTY_SERVICE_KEY env var. Escalation policy: P1 immediate, P2 after 15min.",
+        "metadata": {"api_version": "v2"},
+        "created_at": "2026-01-17T14:00:00Z",
+        "updated_at": "2026-01-17T14:00:00Z"
+      }
+    }
+  ]
+}

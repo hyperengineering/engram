@@ -1,0 +1,84 @@
+{
+  "description": "Reasoning layer entities: goals and CSFs with FK relationships",
+  "entries": [
+    {
+      "table_name": "goals",
+      "row_id": "goal-001",
+      "operation": "upsert",
+      "payload": {
+        "id": "goal-001",
+        "title": "Improve system reliability",
+        "description": "Achieve 99.9% uptime for all production services",
+        "priority": 1,
+        "status": "active",
+        "parent_goal_id": null,
+        "created_at": "2026-01-15T10:00:00Z",
+        "updated_at": "2026-01-15T10:00:00Z"
+      }
+    },
+    {
+      "table_name": "goals",
+      "row_id": "goal-002",
+      "operation": "upsert",
+      "payload": {
+        "id": "goal-002",
+        "title": "Reduce incident response time",
+        "description": "Sub-goal: cut mean time to recovery to under 15 minutes",
+        "priority": 2,
+        "status": "active",
+        "parent_goal_id": "goal-001",
+        "created_at": "2026-01-15T10:05:00Z",
+        "updated_at": "2026-01-15T10:05:00Z"
+      }
+    },
+    {
+      "table_name": "goals",
+      "row_id": "goal-003",
+      "operation": "upsert",
+      "payload": {
+        "id": "goal-003",
+        "title": "Automate failure detection",
+        "description": "Sub-goal: deploy automated anomaly detection across all services",
+        "priority": 3,
+        "status": "planned",
+        "parent_goal_id": "goal-001",
+        "created_at": "2026-01-15T10:10:00Z",
+        "updated_at": "2026-01-15T10:10:00Z"
+      }
+    },
+    {
+      "table_name": "csfs",
+      "row_id": "csf-001",
+      "operation": "upsert",
+      "payload": {
+        "id": "csf-001",
+        "goal_id": "goal-001",
+        "title": "Uptime SLA compliance",
+        "description": "Maintain 99.9% uptime measured monthly",
+        "metric": "uptime_percentage",
+        "target_value": "99.9",
+        "current_value": "99.7",
+        "status": "tracking",
+        "created_at": "2026-01-15T10:15:00Z",
+        "updated_at": "2026-01-15T10:15:00Z"
+      }
+    },
+    {
+      "table_name": "csfs",
+      "row_id": "csf-002",
+      "operation": "upsert",
+      "payload": {
+        "id": "csf-002",
+        "goal_id": "goal-002",
+        "title": "MTTR under 15 minutes",
+        "description": "Mean time to recovery for P1 incidents",
+        "metric": "mttr_minutes",
+        "target_value": "15",
+        "current_value": "23",
+        "status": "at_risk",
+        "created_at": "2026-01-15T10:20:00Z",
+        "updated_at": "2026-01-15T10:20:00Z"
+      }
+    }
+  ]
+}

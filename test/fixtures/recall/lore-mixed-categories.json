@@ -1,0 +1,50 @@
+[
+  {
+    "content": "Store manager uses lazy loading with double-checked locking to avoid creating duplicate store instances under concurrent access.",
+    "category": "ARCHITECTURAL_DECISION",
+    "confidence": 0.8,
+    "sources": ["multistore-design"]
+  },
+  {
+    "content": "Chi router path parameters are extracted via chi.URLParam, which requires the request to pass through chi's routing middleware first.",
+    "category": "PATTERN_OUTCOME",
+    "confidence": 0.7,
+    "sources": ["chi-routing"]
+  },
+  {
+    "content": "The Store interface grew to 30+ methods. Consider splitting into focused sub-interfaces (SyncStore, LoreStore, EmbeddingStore) for cleaner dependency injection.",
+    "category": "INTERFACE_LESSON",
+    "confidence": 0.6,
+    "sources": ["interface-review"]
+  },
+  {
+    "content": "SQLite RETURNING clause does not work with modernc.org/sqlite for INSERT OR REPLACE — use a separate SELECT after the write instead.",
+    "category": "EDGE_CASE_DISCOVERY",
+    "confidence": 0.75,
+    "sources": ["sqlite-compat"]
+  },
+  {
+    "content": "Setting up test environments requires registering plugins, creating temp dirs, initializing stores, and setting schema versions. Extract a shared setupSyncTestEnv helper to reduce boilerplate.",
+    "category": "IMPLEMENTATION_FRICTION",
+    "confidence": 0.65,
+    "sources": ["test-setup"]
+  },
+  {
+    "content": "Table-driven tests with subtests (t.Run) provide clear failure messages and allow running individual test cases. Prefer this over loop-based assertion checking.",
+    "category": "TESTING_STRATEGY",
+    "confidence": 0.7,
+    "sources": ["testing-patterns"]
+  },
+  {
+    "content": "modernc.org/sqlite CGo-free driver handles WAL mode but requires explicit PRAGMA journal_mode=WAL after opening the database connection.",
+    "category": "DEPENDENCY_BEHAVIOR",
+    "confidence": 0.7,
+    "sources": ["sqlite-driver"]
+  },
+  {
+    "content": "Snapshot generation copies the entire database file. For stores with 10k+ lore entries, this takes ~200ms. Consider incremental snapshots for large stores.",
+    "category": "PERFORMANCE_INSIGHT",
+    "confidence": 0.55,
+    "sources": ["snapshot-perf"]
+  }
+]

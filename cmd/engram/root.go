@@ -55,7 +55,10 @@ func run(cmd *cobra.Command, args []string) error {
 		syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	// 2. Load configuration
+	// 2. Register domain plugins (must happen before any store operations)
+	initPlugins()
+
+	// 3. Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -100,7 +103,7 @@ func run(cmd *cobra.Command, args []string) error {
 	slog.Info("router initialized")
 
 	// 9. Configure HTTP server
-	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      router,

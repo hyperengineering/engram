@@ -1,0 +1,75 @@
+{
+  "description": "Interleaved upserts, deletes, and feedback operations for testing mixed sync workflows",
+  "source_id": "mixed-ops-client",
+  "operations": [
+    {
+      "type": "upsert",
+      "entry": {
+        "id": "mixed-001",
+        "content": "Initial entry for mixed operations test.",
+        "category": "TESTING_STRATEGY",
+        "confidence": 0.7,
+        "sources": ["mixed-ops"]
+      }
+    },
+    {
+      "type": "upsert",
+      "entry": {
+        "id": "mixed-002",
+        "content": "Second entry that will be updated later.",
+        "category": "PATTERN_OUTCOME",
+        "confidence": 0.5,
+        "sources": ["mixed-ops"]
+      }
+    },
+    {
+      "type": "upsert",
+      "entry": {
+        "id": "mixed-003",
+        "content": "Third entry that will be deleted.",
+        "category": "ARCHITECTURAL_DECISION",
+        "confidence": 0.8,
+        "sources": ["mixed-ops"]
+      }
+    },
+    {
+      "type": "delete",
+      "entity_id": "mixed-003"
+    },
+    {
+      "type": "upsert",
+      "entry": {
+        "id": "mixed-002",
+        "content": "Updated second entry with new content after revision.",
+        "category": "PATTERN_OUTCOME",
+        "confidence": 0.75,
+        "sources": ["mixed-ops", "revision"]
+      }
+    },
+    {
+      "type": "upsert",
+      "entry": {
+        "id": "mixed-004",
+        "content": "Fourth entry added after delete of third.",
+        "category": "EDGE_CASE_DISCOVERY",
+        "confidence": 0.6,
+        "sources": ["mixed-ops"]
+      }
+    },
+    {
+      "type": "feedback",
+      "helpful": ["mixed-001"],
+      "incorrect": ["mixed-002"]
+    },
+    {
+      "type": "upsert",
+      "entry": {
+        "id": "mixed-005",
+        "content": "Fifth entry added at the end of the mixed sequence.",
+        "category": "IMPLEMENTATION_FRICTION",
+        "confidence": 0.55,
+        "sources": ["mixed-ops"]
+      }
+    }
+  ]
+}

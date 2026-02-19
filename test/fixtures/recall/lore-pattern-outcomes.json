@@ -1,0 +1,37 @@
+[
+  {
+    "content": "Using sql.NullString for optional fields in SQLite models prevents nil pointer dereferences when scanning NULL columns without requiring COALESCE in every query.",
+    "context": "Story 8.1 implementation — change_log schema",
+    "category": "PATTERN_OUTCOME",
+    "confidence": 0.75,
+    "sources": ["story-8.1-impl"]
+  },
+  {
+    "content": "Wrapping plugin.Register in a recover block allows test files to call it multiple times without panicking on duplicate registration.",
+    "context": "Story 8.4 — plugin registration in tests",
+    "category": "PATTERN_OUTCOME",
+    "confidence": 0.7,
+    "sources": ["story-8.4-testing"]
+  },
+  {
+    "content": "All-or-nothing validation in sync push (reject entire batch if any entry fails) simplifies error recovery for clients compared to partial acceptance.",
+    "context": "Story 8.5 — push validation strategy",
+    "category": "PATTERN_OUTCOME",
+    "confidence": 0.8,
+    "sources": ["story-8.5-validation"]
+  },
+  {
+    "content": "Cursor-based pagination with after=sequence&limit=N provides stable pagination even when new entries are appended during iteration.",
+    "context": "Story 8.6 — delta endpoint pagination",
+    "category": "PATTERN_OUTCOME",
+    "confidence": 0.6,
+    "sources": ["story-8.6-pagination"]
+  },
+  {
+    "content": "Generating snapshots as temporary files then renaming to final path ensures atomic visibility — readers never see partial snapshots.",
+    "context": "Story 8.7 — snapshot generation",
+    "category": "PATTERN_OUTCOME",
+    "confidence": 0.65,
+    "sources": ["story-8.7-snapshot"]
+  }
+]

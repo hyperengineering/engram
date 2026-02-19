@@ -1,0 +1,56 @@
+{
+  "description": "Planning layer entities: FWUs linked to CSFs via FK",
+  "entries": [
+    {
+      "table_name": "fwus",
+      "row_id": "fwu-001",
+      "operation": "upsert",
+      "payload": {
+        "id": "fwu-001",
+        "title": "Deploy health check endpoints",
+        "description": "Add standardized /health and /ready endpoints to all services",
+        "csf_id": "csf-001",
+        "priority": 1,
+        "status": "in_progress",
+        "estimated_effort": "3d",
+        "actual_effort": "1d",
+        "created_at": "2026-01-16T09:00:00Z",
+        "updated_at": "2026-01-17T14:00:00Z"
+      }
+    },
+    {
+      "table_name": "fwus",
+      "row_id": "fwu-002",
+      "operation": "upsert",
+      "payload": {
+        "id": "fwu-002",
+        "title": "Set up PagerDuty integration",
+        "description": "Configure automatic incident routing and escalation policies",
+        "csf_id": "csf-002",
+        "priority": 1,
+        "status": "planned",
+        "estimated_effort": "2d",
+        "actual_effort": null,
+        "created_at": "2026-01-16T09:30:00Z",
+        "updated_at": "2026-01-16T09:30:00Z"
+      }
+    },
+    {
+      "table_name": "fwus",
+      "row_id": "fwu-003",
+      "operation": "upsert",
+      "payload": {
+        "id": "fwu-003",
+        "title": "Implement circuit breakers",
+        "description": "Add circuit breaker pattern to all inter-service calls",
+        "csf_id": "csf-001",
+        "priority": 2,
+        "status": "planned",
+        "estimated_effort": "5d",
+        "actual_effort": null,
+        "created_at": "2026-01-16T10:00:00Z",
+        "updated_at": "2026-01-16T10:00:00Z"
+      }
+    }
+  ]
+}

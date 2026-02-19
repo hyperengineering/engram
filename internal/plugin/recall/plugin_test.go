@@ -536,6 +536,36 @@ func TestValidatePush_PayloadWithEmbeddingFloatArray(t *testing.T) {
 	}
 }
 
+func TestValidatePush_DoubleEncodedPayload(t *testing.T) {
+	p := New()
+	// Double-encoded: a JSON object stringified, then used as payload.
+	// This is what happens when a client does JSON.stringify twice.
+	doubleEncoded := json.RawMessage(`"{\"id\":\"entry-1\",\"content\":\"test\"}"`)
+	entries := []engramsync.ChangeLogEntry{
+		{
+			Sequence:  1,
+			TableName: "lore_entries",
+			EntityID:  "entry-1",
+			Operation: engramsync.OperationUpsert,
+			Payload:   doubleEncoded,
+		},
+	}
+
+	_, err := p.ValidatePush(context.Background(), entries)
+	if err == nil {
+		t.Fatal("expected error for double-encoded payload")
+	}
+
+	var ve plugin.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	if len(ve.Errors) != 1 {
+		t.Fatalf("expected 1 validation error, got %d", len(ve.Errors))
+	}
+	assertContainsMessage(t, ve.Errors, "double-encoded")
+}
+
 // --- OnReplay tests ---
 
 func TestOnReplay_Upsert(t *testing.T) {

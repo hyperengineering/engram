@@ -1,0 +1,20 @@
+{
+  "description": "Feedback operations referencing lore session refs for confidence adjustment",
+  "feedback": [
+    {
+      "helpful": ["L1", "L3"],
+      "not_relevant": ["L2"],
+      "incorrect": []
+    },
+    {
+      "helpful": ["L5"],
+      "not_relevant": [],
+      "incorrect": ["L4"]
+    },
+    {
+      "helpful": [],
+      "not_relevant": ["L6", "L7"],
+      "incorrect": ["L8"]
+    }
+  ]
+}

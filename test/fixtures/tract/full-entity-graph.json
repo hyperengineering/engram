@@ -1,0 +1,120 @@
+{
+  "description": "Complete FK-valid entity graph across all Tract layers. FK chain: goals ← csfs ← fwus ← implementation_contexts. Self-FK: goals.parent_goal_id → goals.id",
+  "entries": [
+    {
+      "table_name": "goals",
+      "row_id": "g-root",
+      "operation": "upsert",
+      "payload": {
+        "id": "g-root",
+        "title": "Ship v2.0",
+        "description": "Complete the v2.0 release with all planned features",
+        "priority": 1,
+        "status": "active",
+        "parent_goal_id": null,
+        "created_at": "2026-02-01T08:00:00Z",
+        "updated_at": "2026-02-01T08:00:00Z"
+      }
+    },
+    {
+      "table_name": "goals",
+      "row_id": "g-child",
+      "operation": "upsert",
+      "payload": {
+        "id": "g-child",
+        "title": "Sync protocol GA",
+        "description": "Universal sync protocol reaches general availability",
+        "priority": 1,
+        "status": "active",
+        "parent_goal_id": "g-root",
+        "created_at": "2026-02-01T08:05:00Z",
+        "updated_at": "2026-02-01T08:05:00Z"
+      }
+    },
+    {
+      "table_name": "csfs",
+      "row_id": "c-1",
+      "operation": "upsert",
+      "payload": {
+        "id": "c-1",
+        "goal_id": "g-child",
+        "title": "All E2E tests green",
+        "description": "Layer 1-4 E2E tests passing in CI",
+        "metric": "test_pass_rate",
+        "target_value": "100",
+        "current_value": "85",
+        "status": "tracking",
+        "created_at": "2026-02-01T09:00:00Z",
+        "updated_at": "2026-02-10T16:00:00Z"
+      }
+    },
+    {
+      "table_name": "fwus",
+      "row_id": "f-1",
+      "operation": "upsert",
+      "payload": {
+        "id": "f-1",
+        "title": "Implement push endpoint tests",
+        "description": "Write and pass all push/delta/snapshot integration tests",
+        "csf_id": "c-1",
+        "priority": 1,
+        "status": "completed",
+        "estimated_effort": "2d",
+        "actual_effort": "3d",
+        "created_at": "2026-02-02T10:00:00Z",
+        "updated_at": "2026-02-05T17:00:00Z"
+      }
+    },
+    {
+      "table_name": "fwus",
+      "row_id": "f-2",
+      "operation": "upsert",
+      "payload": {
+        "id": "f-2",
+        "title": "Binary E2E test wrappers",
+        "description": "Fix CLI wrappers to use correct env vars for Recall and Tract",
+        "csf_id": "c-1",
+        "priority": 1,
+        "status": "in_progress",
+        "estimated_effort": "1d",
+        "actual_effort": null,
+        "created_at": "2026-02-10T09:00:00Z",
+        "updated_at": "2026-02-10T09:00:00Z"
+      }
+    },
+    {
+      "table_name": "implementation_contexts",
+      "row_id": "ic-f1",
+      "operation": "upsert",
+      "payload": {
+        "id": "ic-f1",
+        "fwu_id": "f-1",
+        "context_type": "technical_notes",
+        "content": "Push tests use httptest in-process. No real binary needed for Layer 1. setupSyncTestEnv creates StoreManager with TempDir.",
+        "metadata": {"test_layer": 1, "binary_required": false},
+        "created_at": "2026-02-02T10:30:00Z",
+        "updated_at": "2026-02-02T10:30:00Z"
+      }
+    },
+    {
+      "table_name": "implementation_contexts",
+      "row_id": "ic-f2",
+      "operation": "upsert",
+      "payload": {
+        "id": "ic-f2",
+        "fwu_id": "f-2",
+        "context_type": "technical_notes",
+        "content": "Engram uses env vars only (no CLI flags). Recall needs HOME override for ~/.recall/ isolation. Tract needs HOME override for ~/.tract/ isolation.",
+        "metadata": {"test_layer": 2, "binary_required": true},
+        "created_at": "2026-02-10T09:15:00Z",
+        "updated_at": "2026-02-10T09:15:00Z"
+      }
+    },
+    {
+      "table_name": "goals",
+      "row_id": "g-deleted",
+      "operation": "delete",
+      "payload": null
+    }
+  ]
+}

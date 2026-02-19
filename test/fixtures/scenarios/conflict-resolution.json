@@ -1,0 +1,26 @@
+{
+  "description": "Two clients editing the same lore entry — last-writer-wins resolution",
+  "shared_entry_id": "conflict-entry-001",
+  "client_a": {
+    "source_id": "client-a-uuid",
+    "push_id": "conflict-push-a",
+    "entry": {
+      "content": "Client A's version: sync protocol uses sequence numbers for ordering.",
+      "context": "Written by client A at T1",
+      "category": "ARCHITECTURAL_DECISION",
+      "confidence": 0.8,
+      "sources": ["client-a"]
+    }
+  },
+  "client_b": {
+    "source_id": "client-b-uuid",
+    "push_id": "conflict-push-b",
+    "entry": {
+      "content": "Client B's version: sync protocol uses server-assigned monotonic sequences.",
+      "context": "Written by client B at T2 (after A)",
+      "category": "ARCHITECTURAL_DECISION",
+      "confidence": 0.9,
+      "sources": ["client-b"]
+    }
+  }
+}
