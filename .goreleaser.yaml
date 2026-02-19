@@ -232,7 +232,7 @@ publishers:
       - packages
     cmd: >-
       curl -sf -F p1=@{{ .ArtifactPath }}
-      https://{{ .Env.FURY_PUSH_TOKEN }}@push.fury.io/hyperengineering/
+      https://{{ .Env.FURY_PUSH_TOKEN }}@push.fury.io/neuralmux/
     extra_files:
       - glob: ""
 
