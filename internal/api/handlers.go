@@ -64,8 +64,11 @@ func NewHandler(s store.Store, mgr *multistore.StoreManager, e embedding.Embedde
 // Accepts optional ?store={store_id} query parameter for store-specific stats.
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	storeID := r.URL.Query().Get("store")
+	ctx := r.Context()
 
 	var stats *types.StoreStats
+	var storeType string
+	var schemaVersion int
 	var err error
 
 	if storeID != "" {
@@ -80,7 +83,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		managed, err := h.storeManager.GetStore(r.Context(), storeID)
+		managed, err := h.storeManager.GetStore(ctx, storeID)
 		if err != nil {
 			if errors.Is(err, multistore.ErrStoreNotFound) {
 				WriteProblem(w, r, http.StatusNotFound, "Store not found")
@@ -90,19 +93,29 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 			WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
 			return
 		}
-		stats, err = managed.Store.GetStats(r.Context())
+		stats, err = managed.Store.GetStats(ctx)
 		if err != nil {
 			slog.Error("health stats failed", "store_id", storeID, "error", err)
 			WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
 			return
 		}
+		storeType = managed.Type()
+		schemaVersion = managed.SchemaVersion(ctx)
 	} else {
 		// Default/global health (backward compatible)
-		stats, err = h.store.GetStats(r.Context())
+		stats, err = h.store.GetStats(ctx)
 		if err != nil {
 			slog.Error("health stats failed", "error", err)
 			WriteProblem(w, r, http.StatusInternalServerError, "Internal error")
 			return
+		}
+
+		// Get store type and schema version from default store if manager available
+		if h.storeManager != nil {
+			if managed, mgrErr := h.storeManager.GetStore(ctx, "default"); mgrErr == nil {
+				storeType = managed.Type()
+				schemaVersion = managed.SchemaVersion(ctx)
+			}
 		}
 	}
 
@@ -112,6 +125,8 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		EmbeddingModel: h.embedder.ModelName(),
 		LoreCount:      stats.LoreCount,
 		LastSnapshot:   stats.LastSnapshot,
+		StoreType:      storeType,
+		SchemaVersion:  schemaVersion,
 	}
 
 	// Include store_id in response if specified
@@ -125,9 +140,10 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 
 // Stats returns extended system metrics for monitoring
 func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
-	storeID := StoreIDFromContext(r.Context())
+	ctx := r.Context()
+	storeID := StoreIDFromContext(ctx)
 	s := h.getStoreForRequest(r)
-	stats, err := s.GetExtendedStats(r.Context())
+	stats, err := s.GetExtendedStats(ctx)
 	if err != nil {
 		slog.Error("stats retrieval failed",
 			"component", "api",
@@ -141,8 +157,20 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include store_id in response if accessed via store-scoped route
-	if IsStoreScoped(r.Context()) {
+	if IsStoreScoped(ctx) {
 		stats.StoreID = storeID
+	}
+
+	// Include store type and schema version if manager available
+	if h.storeManager != nil {
+		lookupID := storeID
+		if lookupID == "" {
+			lookupID = "default"
+		}
+		if managed, mgrErr := h.storeManager.GetStore(ctx, lookupID); mgrErr == nil {
+			stats.StoreType = managed.Type()
+			stats.SchemaVersion = managed.SchemaVersion(ctx)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

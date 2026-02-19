@@ -99,7 +99,9 @@ type HealthResponse struct {
 	EmbeddingModel string     `json:"embedding_model"`
 	LoreCount      int64      `json:"lore_count"`
 	LastSnapshot   *time.Time `json:"last_snapshot"`
-	StoreID        string     `json:"store_id,omitempty"` // Included when store parameter specified
+	StoreID        string     `json:"store_id,omitempty"`    // Included when store parameter specified
+	StoreType      string     `json:"store_type,omitempty"`  // Store type: "recall", "generic", etc.
+	SchemaVersion  int        `json:"schema_version"`        // Schema version for client compatibility
 }
 
 // --- Architecture-aligned domain types (Story 1.1) ---
@@ -238,7 +240,9 @@ type ExtendedStats struct {
 	StatsAsOf    time.Time  `json:"stats_as_of"`
 
 	// Store identification (included when accessed via store-scoped route)
-	StoreID string `json:"store_id,omitempty"`
+	StoreID       string `json:"store_id,omitempty"`
+	StoreType     string `json:"store_type,omitempty"` // Store type: "recall", "generic", etc.
+	SchemaVersion int    `json:"schema_version"`       // Schema version for client compatibility
 }
 
 // EmbeddingStats tracks embedding pipeline health.

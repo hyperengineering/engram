@@ -154,7 +154,9 @@ GET /api/v1/health?store={store_id}
   "embedding_model": "text-embedding-3-small",
   "lore_count": 1234,
   "last_snapshot": "2026-01-28T12:00:00Z",
-  "store_id": "neuralmux/engram"
+  "store_id": "neuralmux/engram",
+  "store_type": "recall",
+  "schema_version": 1
 }
 ```
 
@@ -168,6 +170,8 @@ GET /api/v1/health?store={store_id}
 | `lore_count` | integer | Total number of lore entries in the store |
 | `last_snapshot` | string (RFC 3339) or null | Timestamp of last snapshot generation |
 | `store_id` | string | Store ID (only present when `?store=` specified) |
+| `store_type` | string | Store type: `"recall"`, `"generic"`, etc. (for client compatibility) |
+| `schema_version` | integer | Schema version for client compatibility checking |
 
 **Without `?store=` parameter:** Returns stats for the `default` store.
 
@@ -178,6 +182,8 @@ GET /api/v1/health?store={store_id}
 - Detect embedding model mismatches (client should warn if local model differs)
 - Monitor lore growth and snapshot freshness
 - Check store-specific health status
+- **Verify store type compatibility** (e.g., Recall clients should connect to `recall` stores)
+- **Check schema version** before sync operations to detect incompatibilities
 
 ---
 
