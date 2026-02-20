@@ -2,45 +2,16 @@ package tract
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hyperengineering/engram/internal/plugin"
 	"github.com/hyperengineering/engram/internal/sync"
 )
 
-// replayableTables are tables with registered schemas that support domain table replay.
-// Tables not in this set are still stored in the change_log but not materialized
-// into domain tables. This allows the Tract CLI to evolve its schema independently.
-var replayableTables = map[string]bool{
-	"goals":                   true,
-	"csfs":                    true,
-	"fwus":                    true,
-	"implementation_contexts": true,
-}
-
-// onReplay dispatches change log entries to the appropriate domain tables.
-// Unlike Recall, Tract does NOT queue embeddings — Tract entities are structural,
-// not semantic.
-// Tables without registered schemas are silently skipped (stored in change_log only).
-func onReplay(ctx context.Context, store plugin.ReplayStore, entries []sync.ChangeLogEntry) error {
-	for _, entry := range entries {
-		if !replayableTables[entry.TableName] {
-			// Unknown tables are stored in change_log but not replayed
-			continue
-		}
-
-		switch entry.Operation {
-		case sync.OperationUpsert:
-			if err := store.UpsertRow(ctx, entry.TableName, entry.EntityID, entry.Payload); err != nil {
-				return fmt.Errorf("upsert %s/%s: %w", entry.TableName, entry.EntityID, err)
-			}
-			// No embedding queuing for Tract tables
-
-		case sync.OperationDelete:
-			if err := store.DeleteRow(ctx, entry.TableName, entry.EntityID); err != nil {
-				return fmt.Errorf("delete %s/%s: %w", entry.TableName, entry.EntityID, err)
-			}
-		}
-	}
+// onReplay is a no-op for the Tract plugin.
+// All entries are stored in the change_log (by the sync handler) which is the
+// source of truth for client sync. Domain table replay is skipped because the
+// Tract CLI schema evolves independently and the server's domain table
+// migrations may not match the client's actual payload structure.
+func onReplay(_ context.Context, _ plugin.ReplayStore, _ []sync.ChangeLogEntry) error {
 	return nil
 }

@@ -1695,16 +1695,6 @@ func validICPayload(t *testing.T, id, fwuID string) json.RawMessage {
 	return json.RawMessage(b)
 }
 
-// tractDB returns the underlying *sql.DB from a managed store via type assertion.
-func tractDB(t *testing.T, managed *multistore.ManagedStore) *store.SQLiteStore {
-	t.Helper()
-	sqliteStore, ok := managed.Store.(*store.SQLiteStore)
-	if !ok {
-		t.Fatalf("managed store is not *store.SQLiteStore, got %T", managed.Store)
-	}
-	return sqliteStore
-}
-
 // Seed 8.2: Push a goal through the API to a Tract-typed store
 func TestTractIntegration_PushGoal(t *testing.T) {
 	manager, handler, managed := setupTractTestEnv(t)
@@ -1748,23 +1738,8 @@ func TestTractIntegration_PushGoal(t *testing.T) {
 		t.Errorf("expected remote_sequence > 0, got %d", resp.RemoteSequence)
 	}
 
-	// Verify the goal appears in the goals table
-	sqliteStore := tractDB(t, managed)
-	db := sqliteStore.DB()
-
-	var title, status string
-	err := db.QueryRow("SELECT title, status FROM goals WHERE id = ?", goalID).Scan(&title, &status)
-	if err != nil {
-		t.Fatalf("query goals table: %v", err)
-	}
-	if title != "Goal "+goalID {
-		t.Errorf("title = %q, want %q", title, "Goal "+goalID)
-	}
-	if status != "active" {
-		t.Errorf("status = %q, want %q", status, "active")
-	}
-
-	// Verify the change_log has the entry with correct table_name
+	// onReplay is a no-op for Tract — domain tables are not populated.
+	// Verify the change_log has the entry with correct table_name.
 	ctx := context.Background()
 	entries, err := managed.Store.GetChangeLogAfter(ctx, 0, 100)
 	if err != nil {
@@ -1845,47 +1820,8 @@ func TestTractIntegration_FullGraphPush(t *testing.T) {
 		t.Errorf("expected accepted=4, got %d", resp.Accepted)
 	}
 
-	// Verify all entries appear in their correct domain tables
-	sqliteStore := tractDB(t, managed)
-	db := sqliteStore.DB()
-
-	// Check goals
-	var goalTitle string
-	if err := db.QueryRow("SELECT title FROM goals WHERE id = ?", goalID).Scan(&goalTitle); err != nil {
-		t.Fatalf("query goals: %v", err)
-	}
-	if goalTitle != "Goal "+goalID {
-		t.Errorf("goal title = %q, want %q", goalTitle, "Goal "+goalID)
-	}
-
-	// Check csfs
-	var csfGoalID string
-	if err := db.QueryRow("SELECT goal_id FROM csfs WHERE id = ?", csfID).Scan(&csfGoalID); err != nil {
-		t.Fatalf("query csfs: %v", err)
-	}
-	if csfGoalID != goalID {
-		t.Errorf("csf goal_id = %q, want %q", csfGoalID, goalID)
-	}
-
-	// Check fwus
-	var fwuCSFID string
-	if err := db.QueryRow("SELECT csf_id FROM fwus WHERE id = ?", fwuID).Scan(&fwuCSFID); err != nil {
-		t.Fatalf("query fwus: %v", err)
-	}
-	if fwuCSFID != csfID {
-		t.Errorf("fwu csf_id = %q, want %q", fwuCSFID, csfID)
-	}
-
-	// Check implementation_contexts
-	var icFWUID string
-	if err := db.QueryRow("SELECT fwu_id FROM implementation_contexts WHERE id = ?", icID).Scan(&icFWUID); err != nil {
-		t.Fatalf("query implementation_contexts: %v", err)
-	}
-	if icFWUID != fwuID {
-		t.Errorf("ic fwu_id = %q, want %q", icFWUID, fwuID)
-	}
-
-	// Verify change_log entries follow FK order (goals before csfs before fwus before ICs)
+	// onReplay is a no-op for Tract — domain tables are not populated.
+	// Verify change_log entries follow FK order (goals before csfs before fwus before ICs).
 	ctx := context.Background()
 	changeLog, err := managed.Store.GetChangeLogAfter(ctx, 0, 100)
 	if err != nil {
@@ -1972,43 +1908,41 @@ func TestTractIntegration_MixedDeletesAndUpserts(t *testing.T) {
 		t.Errorf("expected accepted=3, got %d", resp.Accepted)
 	}
 
-	// Verify the IC was soft-deleted (deleted_at set)
-	sqliteStore := tractDB(t, managed)
-	db := sqliteStore.DB()
-
-	var deletedAt *string
-	err := db.QueryRow("SELECT deleted_at FROM implementation_contexts WHERE id = ?", icID).Scan(&deletedAt)
+	// onReplay is a no-op for Tract — verify via change_log instead.
+	ctx := context.Background()
+	changeLog, err := managed.Store.GetChangeLogAfter(ctx, 0, 100)
 	if err != nil {
-		t.Fatalf("query IC deleted_at: %v", err)
-	}
-	if deletedAt == nil || *deletedAt == "" {
-		t.Error("expected IC deleted_at to be set, got nil or empty")
+		t.Fatalf("GetChangeLogAfter() error = %v", err)
 	}
 
-	// Verify new goal was created
-	var newGoalTitle string
-	err = db.QueryRow("SELECT title FROM goals WHERE id = ? AND deleted_at IS NULL", newGoalID).Scan(&newGoalTitle)
-	if err != nil {
-		t.Fatalf("query new goal: %v", err)
-	}
-	if newGoalTitle != "Goal "+newGoalID {
-		t.Errorf("new goal title = %q, want %q", newGoalTitle, "Goal "+newGoalID)
+	// Setup push had 4 entries, mixed push had 3 entries = 7 total
+	if len(changeLog) != 7 {
+		t.Fatalf("expected 7 change log entries, got %d", len(changeLog))
 	}
 
-	// Verify new CSF was created
-	var newCSFTitle string
-	err = db.QueryRow("SELECT title FROM csfs WHERE id = ? AND deleted_at IS NULL", newCSFID).Scan(&newCSFTitle)
-	if err != nil {
-		t.Fatalf("query new csf: %v", err)
+	// The mixed push entries (indices 4-6) should include the delete and upserts.
+	// FK reorder puts: delete IC first, then upsert goals, then upsert csfs.
+	foundDelete := false
+	foundNewGoal := false
+	foundNewCSF := false
+	for _, entry := range changeLog[4:] {
+		if entry.EntityID == icID && entry.Operation == "delete" {
+			foundDelete = true
+		}
+		if entry.EntityID == newGoalID && entry.Operation == "upsert" {
+			foundNewGoal = true
+		}
+		if entry.EntityID == newCSFID && entry.Operation == "upsert" {
+			foundNewCSF = true
+		}
 	}
-	if newCSFTitle != "CSF "+newCSFID {
-		t.Errorf("new csf title = %q, want %q", newCSFTitle, "CSF "+newCSFID)
+	if !foundDelete {
+		t.Error("expected delete entry for IC in change_log")
 	}
-
-	// Verify original entities are still intact (not deleted)
-	var origGoalTitle string
-	err = db.QueryRow("SELECT title FROM goals WHERE id = ? AND deleted_at IS NULL", goalID).Scan(&origGoalTitle)
-	if err != nil {
-		t.Fatalf("original goal should still exist: %v", err)
+	if !foundNewGoal {
+		t.Error("expected upsert entry for new goal in change_log")
+	}
+	if !foundNewCSF {
+		t.Error("expected upsert entry for new CSF in change_log")
 	}
 }
