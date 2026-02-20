@@ -9,11 +9,39 @@ import (
 
 // tablePriority defines the FK hierarchy level for each table.
 // Lower priority = closer to root = must be upserted first.
+// Tables not listed here get defaultTablePriority (sorted after known tables).
 var tablePriority = map[string]int{
 	"goals":                   0,
 	"csfs":                    1,
-	"fwus":                    2,
-	"implementation_contexts": 3,
+	"ncs":                     1,
+	"capabilities":            1,
+	"sos":                     2,
+	"epics":                   2,
+	"so_ncs":                  3,
+	"features":                3,
+	"fwus":                    4,
+	"implementation_contexts": 5,
+	"fwu_boundaries":          5,
+	"fwu_dependencies":        5,
+	"fwu_design_decisions":    5,
+	"fwu_interface_contracts": 5,
+	"fwu_verification_gates":  5,
+	"design_decisions":        5,
+	"entity_specs":            5,
+	"test_seeds":              5,
+	"file_actions":            5,
+	"followups":               5,
+}
+
+const defaultTablePriority = 99
+
+// getTablePriority returns the FK ordering priority for a table.
+// Unknown tables get defaultTablePriority (sorted after known tables).
+func getTablePriority(tableName string) int {
+	if p, ok := tablePriority[tableName]; ok {
+		return p
+	}
+	return defaultTablePriority
 }
 
 // reorderForFK reorders entries so that FK constraints are satisfied during replay.
@@ -43,15 +71,15 @@ func reorderForFK(entries []sync.ChangeLogEntry) []sync.ChangeLogEntry {
 
 	// Sort deletes: highest table priority first (children before parents)
 	sort.SliceStable(deletes, func(i, j int) bool {
-		pi := tablePriority[deletes[i].TableName]
-		pj := tablePriority[deletes[j].TableName]
+		pi := getTablePriority(deletes[i].TableName)
+		pj := getTablePriority(deletes[j].TableName)
 		return pi > pj
 	})
 
 	// Sort upserts: lowest table priority first (parents before children)
 	sort.SliceStable(upserts, func(i, j int) bool {
-		pi := tablePriority[upserts[i].TableName]
-		pj := tablePriority[upserts[j].TableName]
+		pi := getTablePriority(upserts[i].TableName)
+		pj := getTablePriority(upserts[j].TableName)
 		return pi < pj
 	})
 

@@ -149,6 +149,9 @@ func (p *Plugin) TableSchemas() []plugin.TableSchema {
 }
 
 // ValidatePush validates and reorders change log entries for FK-safe replay.
+// The Tract plugin accepts any table name (validated against a safe regex)
+// because the Tract CLI schema evolves independently of the server.
+// Unknown tables are stored in the change_log but not replayed to domain tables.
 func (p *Plugin) ValidatePush(ctx context.Context, entries []sync.ChangeLogEntry) ([]sync.ChangeLogEntry, error) {
 	if len(entries) == 0 {
 		return entries, nil
@@ -157,13 +160,13 @@ func (p *Plugin) ValidatePush(ctx context.Context, entries []sync.ChangeLogEntry
 	var validationErrors []plugin.ValidationError
 
 	for _, entry := range entries {
-		// 1. Table allowlist check
-		if !allowedTables[entry.TableName] {
+		// 1. Table name format check (prevent SQL injection)
+		if !tableNameRegex.MatchString(entry.TableName) {
 			validationErrors = append(validationErrors, plugin.ValidationError{
 				Sequence:  entry.Sequence,
 				TableName: entry.TableName,
 				EntityID:  entry.EntityID,
-				Message:   "unknown table \"" + entry.TableName + "\" for tract store",
+				Message:   "invalid table name \"" + entry.TableName + "\"",
 			})
 			continue
 		}

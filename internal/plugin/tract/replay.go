@@ -8,13 +8,24 @@ import (
 	"github.com/hyperengineering/engram/internal/sync"
 )
 
+// replayableTables are tables with registered schemas that support domain table replay.
+// Tables not in this set are still stored in the change_log but not materialized
+// into domain tables. This allows the Tract CLI to evolve its schema independently.
+var replayableTables = map[string]bool{
+	"goals":                   true,
+	"csfs":                    true,
+	"fwus":                    true,
+	"implementation_contexts": true,
+}
+
 // onReplay dispatches change log entries to the appropriate domain tables.
 // Unlike Recall, Tract does NOT queue embeddings — Tract entities are structural,
 // not semantic.
+// Tables without registered schemas are silently skipped (stored in change_log only).
 func onReplay(ctx context.Context, store plugin.ReplayStore, entries []sync.ChangeLogEntry) error {
 	for _, entry := range entries {
-		if !allowedTables[entry.TableName] {
-			// Skip unknown tables (same pattern as Recall plugin)
+		if !replayableTables[entry.TableName] {
+			// Unknown tables are stored in change_log but not replayed
 			continue
 		}
 
